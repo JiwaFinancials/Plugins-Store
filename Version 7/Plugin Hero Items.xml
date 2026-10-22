@@ -1,0 +1,996 @@
+﻿<?xml version="1.0" encoding="utf-16"?>
+<JiwaDocument xmlns:jiwa="http://www.jiwa.com.au/xml/schemas" Type="JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin">
+  <RecID>52889991-d3db-4048-8b93-bda4a4b9b834</RecID>
+  <Name>Hero Items</Name>
+  <Description>This plugin adds a tab to sales orders called "Hero Items". On this tab is a series of panels, each panel representing a category 1 entry (i.e. Clothing, Computer, Door, etc.). Within each panel are indicators representing inventory items that have their custom field "Hero Item" ticked (this plugin also creates this custom field).&amp;#13;&amp;#10;&amp;#13;&amp;#10;An indicator has a picture of the inventory item, the quantity that are on this order, and a plus and minus button that can be clicked to increase of decrease the quantity of that item on the order.</Description>
+  <IsEnabled>true</IsEnabled>
+  <IsIsolatedToOwnAppDomain>false</IsIsolatedToOwnAppDomain>
+  <ExecutionOrder>0</ExecutionOrder>
+  <Author>Jiwa Financials</Author>
+  <Version>7.2.1.0</Version>
+  <Code>using Microsoft.VisualBasic;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Diagnostics;
+using JiwaFinancials.Jiwa;
+using System.Windows.Forms;
+using System.Data.SqlClient;
+using System.Drawing;
+using ServiceStack;
+using ServiceStack.DataAnnotations;
+using ServiceStack.Model;
+
+#region "FormPlugin"
+public class FormPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaFormPlugin
+{
+
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void SetupBeforeHandlers(JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm JiwaForm, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)JiwaForm;
+		//We jump in first to clear all our hero item amounts.
+		salesOrderForm.SalesOrder.ReadEnd += SalesOrder_ReadEnd;
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm JiwaForm, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+		//Create the tab
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)JiwaForm;
+				
+		Infragistics.Win.UltraWinTabControl.UltraTab heroItemsTab = salesOrderForm.MainTabControl.Tabs.Add("Hero Items", "Hero Items");
+		heroItemsTab.TabPage.AutoScroll = true;
+		
+		//Read all the hero items and add them to the correct panel
+		JiwaFinancials.Jiwa.JiwaInventory.HeroItemCollection heroItems = Plugin.Manager.CollectionFactory.CreateCollection&lt;JiwaFinancials.Jiwa.JiwaInventory.HeroItemCollection, JiwaFinancials.Jiwa.JiwaInventory.HeroItem&gt;();
+		heroItems.Read();
+		
+		foreach(JiwaFinancials.Jiwa.JiwaInventory.HeroItem heroItem in heroItems)
+		{
+			//Change the values below to change panel size and number of indicators across a panel. Autoscroll allows unlimited rows of indicators.
+			System.Drawing.Size indicatorPanelSize = new System.Drawing.Size(112, 142);
+			int indicatorsPerRow = 3;
+			int gapBetweenIndicators = 5;
+			
+			if(heroItemsTab.TabPage.Controls.ContainsKey(heroItem.Category1Description) == false)
+			{
+				//Create a dashboard panel for this category
+				JiwaFinancials.Jiwa.JiwaApplication.Entities.Inventory.Category category1 = Plugin.Manager.EntityFactory.CreateEntity&lt;JiwaFinancials.Jiwa.JiwaApplication.Entities.Inventory.Category&gt;();
+				category1.CategoryNo = 1;
+				category1.ReadRecordFromDescription(heroItem.Category1Description);
+				CreateDashboardPanel(heroItemsTab, category1);
+			}
+			
+			JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel heroItemIndicatorPanel = new JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel();
+			heroItemIndicatorPanel.Manager = Plugin.Manager;
+        	heroItemIndicatorPanel.Setup();
+			heroItemIndicatorPanel.Tag = heroItem;
+			heroItemIndicatorPanel.Caption = string.Format("{0}{1}{2}", heroItem.PartNo, System.Environment.NewLine, heroItem.Description);
+			heroItemIndicatorPanel.CaptionUltraLabel.WrapText = false;
+			
+			//Tooltip
+			Infragistics.Win.UltraWinToolTip.UltraToolTipInfo heroItemToolTip = new Infragistics.Win.UltraWinToolTip.UltraToolTipInfo(string.Format("{0}{1}{2}", heroItem.PartNo, System.Environment.NewLine, heroItem.Description), Infragistics.Win.ToolTipImage.Custom, "", Infragistics.Win.DefaultableBoolean.True);
+			salesOrderForm.UltraToolTipManager1.SetUltraToolTip(heroItemIndicatorPanel.CaptionUltraLabel, heroItemToolTip);
+			
+			heroItemIndicatorPanel.UltraPictureBox1.Image = heroItem.Picture;
+			heroItemIndicatorPanel.UltraPictureBox1.Appearance.ImageHAlign = Infragistics.Win.HAlign.Center;
+			heroItemIndicatorPanel.Height += heroItemIndicatorPanel.CaptionUltraLabel.Height + 5;
+			heroItemIndicatorPanel.CaptionUltraLabel.Top += heroItemIndicatorPanel.CaptionUltraLabel.Height + 5;
+			heroItemIndicatorPanel.CaptionUltraLabel.Left = 0;
+			heroItemIndicatorPanel.ValueUltraLabel.Visible = false;
+			heroItemIndicatorPanel.BackColor = heroItemIndicatorPanel.CaptionUltraLabel.Appearance.BackColor;
+			JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor heroItemNumericEditor = new JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor();
+			heroItemNumericEditor.Name = "heroItemNumericEditor";
+			heroItemNumericEditor.SpinButtonDisplayStyle = Infragistics.Win.ButtonDisplayStyle.Always;
+			heroItemNumericEditor.AutoSize = false;
+			heroItemNumericEditor.Size = new System.Drawing.Size(57, 35);
+			heroItemNumericEditor.DecimalPlaces = heroItem.QuantityDecimalPlaces;
+			heroItemIndicatorPanel.Controls.Add(heroItemNumericEditor);
+			heroItemNumericEditor.Left = heroItemIndicatorPanel.Width - heroItemNumericEditor.Width;
+			heroItemNumericEditor.BringToFront();
+			heroItemNumericEditor.MinValue = 0;
+			heroItemNumericEditor.ValueChanged += heroItemNumericEditor_ValueChanged;
+			
+			JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel dashboardPanelIBelongTo = (JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)heroItemsTab.TabPage.Controls[heroItem.Category1Description];
+			Infragistics.Win.Misc.UltraPanel ultraPanelIBelongTo = (Infragistics.Win.Misc.UltraPanel)dashboardPanelIBelongTo.ControlArea.ClientArea.Controls[heroItem.Category1Description];
+			ultraPanelIBelongTo.ClientArea.Controls.Add(heroItemIndicatorPanel);
+			
+			//Position to hero item indicator panel
+			int indicatorCount = ultraPanelIBelongTo.ClientArea.Controls.Count - 1; //Before I was added
+			int targetRow = indicatorCount / indicatorsPerRow;
+			int targetColumn = indicatorCount % indicatorsPerRow;
+			
+			int xCoordinate = (targetColumn * heroItemIndicatorPanel.Width) + ((targetColumn + 1) * gapBetweenIndicators);
+			int yCoordinate = (targetRow * heroItemIndicatorPanel.Height) + ((targetRow + 1) * gapBetweenIndicators);
+			heroItemIndicatorPanel.Location = new System.Drawing.Point(xCoordinate, yCoordinate);			
+		}
+		
+		//Add handlers to deal with quantity changes
+		salesOrderForm.LineDisplayed += SalesOrderForm_LineDisplayed;
+		salesOrderForm.SalesOrder.SalesOrderLineRemoved += SalesOrder_SalesOrderLineRemoved;
+		salesOrderForm.SalesOrder.Created += SalesOrder_Created;
+    }
+	
+	public void heroItemNumericEditor_ValueChanged(object sender, System.EventArgs e)
+	{
+		JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor heroItemNumericEditor = (JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor)sender;
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)JiwaFinancials.Jiwa.JiwaApplication.Manager.GetOwnerForm(heroItemNumericEditor);
+		
+		if(salesOrderForm.Displaying == false)
+		{
+			if(heroItemNumericEditor.Parent != null &amp;&amp; heroItemNumericEditor.Parent is JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)
+			{
+				JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel heroItemIndicatorPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)heroItemNumericEditor.Parent;
+				if(heroItemIndicatorPanel.Tag != null &amp;&amp; heroItemIndicatorPanel.Tag is JiwaFinancials.Jiwa.JiwaInventory.HeroItem)
+				{
+					JiwaFinancials.Jiwa.JiwaInventory.HeroItem heroItem = (JiwaFinancials.Jiwa.JiwaInventory.HeroItem)heroItemIndicatorPanel.Tag;
+					
+					JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder salesOrder = salesOrderForm.SalesOrder;		
+					try
+					{
+						heroItemNumericEditor.ValueChanged -= heroItemNumericEditor_ValueChanged;
+
+						decimal newQuantity = 0;
+						decimal.TryParse(heroItemNumericEditor.Value.ToString(), out newQuantity);
+						
+						bool found = false;
+						foreach(JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrderLine existingSalesOrderLine in salesOrder.SalesOrderLines)
+						{
+							if(existingSalesOrderLine.InventoryID != null &amp;&amp; existingSalesOrderLine.InventoryID == heroItem.InventoryID) 
+							{
+								if(newQuantity &gt; 0)
+									existingSalesOrderLine.QuantityOrdered = newQuantity;
+								else
+									salesOrder.SalesOrderLines.Remove(existingSalesOrderLine);
+								
+								found = true;
+								break;
+							}
+						}
+						
+						if(found == false)
+						{
+							if(newQuantity &gt; 0)
+							{
+								//Create and add a sales order line
+								object newKey = null;
+								salesOrder.SalesOrderLines.AddInventoryItem(heroItem.InventoryID, JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrderLineCollection.SalesOrderLineInventorySeedTypes.e_SalesOrderLineInventoryID, ref newKey, null, 0);
+								salesOrder.SalesOrderLines[newKey.ToString()].QuantityOrdered = newQuantity;							
+							}						
+						}
+					}
+					finally
+					{
+						heroItemNumericEditor.ValueChanged += heroItemNumericEditor_ValueChanged;
+					}
+				
+				}
+			}			
+		}
+		
+	}
+	
+	public void DisplayHeroItem(JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrderLine SalesOrderLine, decimal QuantityOrdered)
+	{
+		JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder salesOrder = (JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder)SalesOrderLine.SalesOrderLines.SalesOrder;
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)salesOrder.Client;
+		bool oldDisplaying = salesOrderForm.Displaying;
+		try
+		{
+			salesOrderForm.Displaying = true;
+			bool found = false;
+			foreach(System.Windows.Forms.Control myControl in salesOrderForm.MainTabControl.Tabs["Hero Items"].TabPage.Controls)
+			{
+				if(myControl is JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)
+				{
+					JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel dashboardPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)myControl;
+					Infragistics.Win.Misc.UltraPanel ultraPanel = (Infragistics.Win.Misc.UltraPanel)dashboardPanel.ControlArea.ClientArea.Controls[dashboardPanel.Name];
+					foreach (System.Windows.Forms.Control myIndicatorControl in ultraPanel.ClientArea.Controls)
+					{
+						if(myIndicatorControl is JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)
+						{
+							JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel indicatorPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)myIndicatorControl;
+							if(indicatorPanel.Tag != null &amp;&amp; indicatorPanel.Tag is JiwaFinancials.Jiwa.JiwaInventory.HeroItem)
+							{
+								JiwaFinancials.Jiwa.JiwaInventory.HeroItem heroItem = (JiwaFinancials.Jiwa.JiwaInventory.HeroItem)indicatorPanel.Tag;
+								if(heroItem.InventoryID != null &amp;&amp; heroItem.InventoryID == SalesOrderLine.InventoryID)
+								{
+									JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor heroItemNumericEditor = (JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor)indicatorPanel.Controls["heroItemNumericEditor"];
+									heroItemNumericEditor.Value = QuantityOrdered;
+									
+									heroItemNumericEditor.ReadOnly = true;
+									
+	                                if(!(salesOrder.BillType == JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderBillTypes.e_SalesOrderShipWhenComplete &amp;&amp; salesOrder.SalesOrderType != JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderTypes.e_SalesOrderNormalSalesOrder &amp;&amp; salesOrder.SelectedHistoryNo &gt; 1))
+										if(!(SalesOrderLine.KitLineType == JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderKitLineTypes.e_SalesOrderKitComponent &amp;&amp; salesOrder.SystemSettings.AllowKitComponentOverride == false))
+											heroItemNumericEditor.ReadOnly = false;
+										
+									if(SalesOrderLine.KitLineType == JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderKitLineTypes.e_SalesOrderKitComponent &amp;&amp; salesOrder.BillType == JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderBillTypes.e_SalesOrderShipWhenComplete &amp;&amp; salesOrder.SelectedHistoryNo &gt; 1)
+										heroItemNumericEditor.ReadOnly = true;
+									
+									found = true;
+									break;
+								}
+							}
+						}
+					}
+					if(found)
+						break;
+				}
+			}				
+		}
+		finally
+		{
+			salesOrderForm.Displaying = oldDisplaying;
+		}
+	}
+	
+	public void SalesOrderForm_LineDisplayed(object sender, System.EventArgs e, JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrderLine SalesOrderLine, int Row)
+	{
+		if(SalesOrderLine.InventoryID != null &amp;&amp; SalesOrderLine.InventoryID.Trim().Length &gt; 0)
+		{
+			JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)SalesOrderLine.SalesOrderLines.SalesOrder.Client;
+			DisplayHeroItem(SalesOrderLine, SalesOrderLine.QuantityOrdered);
+		}
+	}
+	
+	public void SalesOrder_SalesOrderLineRemoved(object sender, System.EventArgs e, JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrderLine SalesOrderLine)
+	{
+		if(SalesOrderLine.InventoryID != null &amp;&amp; SalesOrderLine.InventoryID.Trim().Length &gt; 0)
+		{
+			JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)SalesOrderLine.SalesOrderLines.SalesOrder.Client;
+			DisplayHeroItem(SalesOrderLine, 0);
+		}		
+	}
+	
+	public void SalesOrder_ReadEnd(object sender, System.EventArgs e)
+	{
+		JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder salesOrder = (JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder)sender;
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)salesOrder.Client;
+		SetAllHeroItemsQuantitiesToZero(salesOrderForm);
+		LockOrUnlockQuantityEditor(salesOrderForm);
+	}
+	
+	public void SalesOrder_Created(object sender, System.EventArgs e, JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.NewSalesOrderTypes NewSalesOrderType, ref JiwaFinancials.Jiwa.JiwaSales.SalesQuote.SalesQuote SourceQuoteObject)
+	{
+		JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder salesOrder = (JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder)sender;
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)salesOrder.Client;
+		SetAllHeroItemsQuantitiesToZero(salesOrderForm);
+		LockOrUnlockQuantityEditor(salesOrderForm);
+	}	
+	
+	public void LockOrUnlockQuantityEditor(JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm SalesOrderForm)
+	{
+		JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder salesOrder = (JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder)SalesOrderForm.SalesOrder;
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)salesOrder.Client;
+		
+		bool oldDisplaying = salesOrderForm.Displaying;
+		try
+		{
+			salesOrderForm.Displaying = true;
+			
+			foreach(System.Windows.Forms.Control myControl in SalesOrderForm.MainTabControl.Tabs["Hero Items"].TabPage.Controls)
+			{
+				if(myControl is JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)
+				{
+					JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel dashboardPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)myControl;
+					Infragistics.Win.Misc.UltraPanel ultraPanel = (Infragistics.Win.Misc.UltraPanel)dashboardPanel.ControlArea.ClientArea.Controls[dashboardPanel.Name];
+					foreach (System.Windows.Forms.Control myIndicatorControl in ultraPanel.ClientArea.Controls)
+					{
+						if(myIndicatorControl is JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)
+						{
+							JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel indicatorPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)myIndicatorControl;
+							JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor heroItemNumericEditor = (JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor)indicatorPanel.Controls["heroItemNumericEditor"];
+
+							heroItemNumericEditor.ReadOnly = true;
+							if((salesOrder.SalesOrderStatus &lt;= JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderStatuses.e_SalesOrderEntered &amp;&amp; salesOrder.SelectedHistoryNo == salesOrder.CurrentHistoryNo) &amp;&amp; !(salesOrder.SystemSettings.AllowModificationOfPrintedUnprocessedInvoices == false &amp;&amp; salesOrder.PrintLogCollection.Count &gt; 0))
+								if(salesOrder.SelectedHistoryNo == 1 || (salesOrder.BillType == JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderBillTypes.e_SalesOrderShipWhenComplete))
+		                            if(!(salesOrder.BillType == JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderBillTypes.e_SalesOrderShipWhenComplete &amp;&amp; salesOrder.SalesOrderType != JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder.SalesOrderTypes.e_SalesOrderNormalSalesOrder &amp;&amp; salesOrder.SelectedHistoryNo &gt; 1))
+										heroItemNumericEditor.ReadOnly = false;							
+						}
+					}
+				}
+			}				
+		}
+		finally
+		{
+			salesOrderForm.Displaying = oldDisplaying;
+		}
+	}
+	
+	public void SetAllHeroItemsQuantitiesToZero(JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm SalesOrderForm)
+	{
+		JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder salesOrder = (JiwaFinancials.Jiwa.JiwaSales.SalesOrder.SalesOrder)SalesOrderForm.SalesOrder;
+		JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm salesOrderForm = (JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.BaseSalesOrderEntryForm)salesOrder.Client;
+		
+		bool oldDisplaying = salesOrderForm.Displaying;
+		
+		try
+		{
+			salesOrderForm.Displaying = true;
+			
+			foreach(System.Windows.Forms.Control myControl in SalesOrderForm.MainTabControl.Tabs["Hero Items"].TabPage.Controls)
+			{
+				if(myControl is JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)
+				{
+					JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel dashboardPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel)myControl;
+					Infragistics.Win.Misc.UltraPanel ultraPanel = (Infragistics.Win.Misc.UltraPanel)dashboardPanel.ControlArea.ClientArea.Controls[dashboardPanel.Name];
+					foreach (System.Windows.Forms.Control myIndicatorControl in ultraPanel.ClientArea.Controls)
+					{
+						if(myIndicatorControl is JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)
+						{
+							JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel indicatorPanel = (JiwaFinancials.Jiwa.JiwaDashboardUI.IndicatorPanel)myIndicatorControl;
+							JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor heroItemNumericEditor = (JiwaFinancials.Jiwa.JiwaApplication.Controls.NumericEditor)indicatorPanel.Controls["heroItemNumericEditor"];
+							heroItemNumericEditor.Value = 0;
+						}
+					}
+				}
+			}				
+		}
+		finally
+		{
+			salesOrderForm.Displaying = oldDisplaying;
+		}
+	}
+	
+	public void CreateDashboardPanel(Infragistics.Win.UltraWinTabControl.UltraTab TargetTab, JiwaFinancials.Jiwa.JiwaApplication.Entities.Inventory.Category Category1)
+	{
+		//Change the values below to change panel size and number of panels across the screen. Autoscroll allows unlimited rows of panels.
+		System.Drawing.Size dashboardPanelSize = new System.Drawing.Size(375, 265);
+		int panelsPerRow = 4;
+		int gapBetweenPanels = 5;
+		
+		JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel newDashboardPanel = new JiwaFinancials.Jiwa.JiwaDashboardUI.DashboardPanel();
+		newDashboardPanel.Name = Category1.Description;
+		newDashboardPanel.Title = Category1.Description;
+		newDashboardPanel.Size = dashboardPanelSize;
+		
+		Infragistics.Win.Misc.UltraPanel newUltraPanel = new Infragistics.Win.Misc.UltraPanel();
+		newUltraPanel.Name = Category1.Description;
+		newUltraPanel.AutoScroll = true;
+		
+		newDashboardPanel.ControlArea.ClientArea.Controls.Add(newUltraPanel);
+		newUltraPanel.Dock = System.Windows.Forms.DockStyle.Fill;
+		
+		TargetTab.TabPage.Controls.Add(newDashboardPanel);
+		
+		//Position the dashboard panel
+		int panelCount = TargetTab.TabPage.Controls.Count - 1; //Before I was added
+		int targetRow = panelCount / panelsPerRow;
+		int targetColumn = panelCount % panelsPerRow;
+		
+		int xCoordinate = (targetColumn * dashboardPanelSize.Width) + ((targetColumn + 1) * gapBetweenPanels);
+		int yCoordinate = (targetRow * dashboardPanelSize.Height) + ((targetRow + 1) * gapBetweenPanels);
+		newDashboardPanel.Location = new System.Drawing.Point(xCoordinate, yCoordinate);				
+	}
+}
+#endregion
+
+#region "BusinessLogicPlugin"
+public class BusinessLogicPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogicPlugin
+{
+
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic JiwaBusinessLogic, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+}
+#endregion
+
+#region "ApplicationManagerPlugin"
+public class ApplicationManagerPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaApplicationManagerPlugin
+{
+
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+}
+#endregion
+
+#region "CustomFieldPlugin"
+public class CustomFieldPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldPlugin
+{
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void FormatCell(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldValues HostObject, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ReadData(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldValues HostObject, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ButtonClicked(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldValues HostObject, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+}
+#endregion
+
+#region "LineCustomFieldPlugin"
+public class LineCustomFieldPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldPlugin
+{
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void FormatCell(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldValues HostItem, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ReadData(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldValues HostItem, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ButtonClicked(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldValues HostItem, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+}
+#endregion
+
+#region "SystemSettingPlugin"
+public class SystemSettingPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaSystemSettingPlugin
+{
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void FormatCell(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.SystemSettings.Setting SystemSetting)
+    {
+    }
+
+    public void ReadData(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Row, JiwaFinancials.Jiwa.JiwaApplication.SystemSettings.Setting SystemSetting)
+    {
+    }
+
+    public void ButtonClicked(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.SystemSettings.Setting SystemSetting)
+    {
+    }
+}
+#endregion
+
+#region "ScheduledExecutionPlugin"
+public class ScheduledExecutionPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaScheduledExecutionPlugin
+{
+    public void Execute(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin, JiwaFinancials.Jiwa.JiwaApplication.Schedule.Schedule Schedule)
+    {
+        lock (JiwaFinancials.Jiwa.JiwaApplication.Manager.CriticalSectionFlag)
+        {
+            // place processing code in here
+        }
+    }
+
+    public void OnServiceStart(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+
+    public void OnServiceStopping(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+}
+#endregion
+
+namespace JiwaFinancials.Jiwa.JiwaInventory
+{
+	public class HeroItemCollection : JiwaFinancials.Jiwa.JiwaApplication.JiwaCollection&lt;HeroItem&gt;
+	{
+		public override void Read()
+		{
+			
+			string Sql = null;
+			SqlDataReader SQLReader = null;
+			bool oldReading = Reading;
+			
+			try 
+			{
+				Reading = true;
+				Clear();
+
+				var db = Manager.Database;
+
+				Sql = @"SELECT IN_Main.InventoryID, IN_Main.PartNo, IN_Main.Description, IN_Main.DecimalPlaces, IN_Main.Picture, IN_Category1.Description [Category1Description]
+						FROM IN_Main 
+						JOIN IN_Category1 ON IN_Main.Catagory1ID = IN_Category1.Category1ID
+						WHERE InventoryID IN (SELECT InventoryID FROM IN_CustomSettingValues WHERE SettingID = (SELECT TOP 1 SettingID FROM IN_CustomSetting WHERE SettingName = 'Hero Item') AND Contents = 'True') 
+						ORDER BY PartNo ";
+
+				using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction)) {
+					SQLCmd.CommandTimeout = db.DefaultCommandTimeout;
+
+					SQLReader = SQLCmd.ExecuteReader();
+
+					while (SQLReader.Read() == true) {
+						HeroItem heroItem = Manager.CollectionItemFactory.CreateCollectionItem&lt;HeroItem&gt;();
+						
+						heroItem.InventoryID = db.Sanitise(SQLReader, "InventoryID").ToString();
+						heroItem.PartNo = db.Sanitise(SQLReader, "PartNo").ToString();
+						heroItem.Description = db.Sanitise(SQLReader, "Description").ToString();
+						heroItem.QuantityDecimalPlaces = Convert.ToInt16(db.Sanitise(SQLReader, "DecimalPlaces"));
+                      	try
+						{
+							heroItem.Picture = (byte[])db.Sanitise(SQLReader, "Picture");
+						}
+                        catch(Exception ex)
+						{
+							heroItem.Picture = null;
+						}
+						heroItem.Category1Description = db.Sanitise(SQLReader, "Category1Description").ToString();
+						
+						Add(heroItem);
+					}
+
+					SQLReader.Close();
+				}
+
+				base.OnRead();
+
+			} 
+			finally 
+			{
+				Reading = oldReading;
+
+				if (SQLReader != null) 
+					SQLReader.Close();
+			}
+		}		
+	}
+		
+	public class HeroItem : JiwaFinancials.Jiwa.JiwaApplication.JiwaCollectionItem&lt;HeroItem&gt;
+	{
+		private string _InventoryID;
+		private string _PartNo;
+		private string _Description;
+		private int _QuantityDecimalPlaces;
+		private byte[] _Picture;
+		private string _Category1Description;
+			
+		public string InventoryID 
+		{
+			get { return _InventoryID; }
+			set {_InventoryID = value;
+				NotifyPropertyChanged("InventoryID"); }
+		}			
+		
+		public string PartNo 
+		{
+			get { return _PartNo; }
+			set {_PartNo = value;
+				NotifyPropertyChanged("PartNo"); }
+		}	
+		
+		public string Description 
+		{
+			get { return _Description; }
+			set {_Description = value;
+				NotifyPropertyChanged("Description"); }
+		}	
+		
+		public int QuantityDecimalPlaces 
+		{
+			get { return _QuantityDecimalPlaces; }
+			set {_QuantityDecimalPlaces = value;
+				NotifyPropertyChanged("QuantityDecimalPlaces"); }
+		}	
+		
+		public byte[] Picture 
+		{
+			get { return _Picture; }
+			set {_Picture = value;
+				NotifyPropertyChanged("Picture"); }
+		}	
+		
+		public string Category1Description 
+		{
+			get { return _Category1Description; }
+			set {_Category1Description = value;
+				NotifyPropertyChanged("Category1Description"); }
+		}				
+		
+		protected override void iSave()
+		{
+			throw new NotImplementedException();
+		}
+
+	}		
+}
+
+</Code>
+  <ExceptionPolicy>Report</ExceptionPolicy>
+  <Language>CSharp</Language>
+  <PluginFormCollection>
+    <PluginForm>
+      <RecID>81dabab9-ac7c-421c-970f-c244fb1055ad</RecID>
+      <Description>Sales Orders</Description>
+      <ClassName>JiwaFinancials.Jiwa.JiwaSalesUI.SalesOrder.SalesOrderEntryForm</ClassName>
+    </PluginForm>
+  </PluginFormCollection>
+  <ReferenceCollection>
+    <Reference>
+      <RecID>c8f18b80-0a3a-43dd-9286-db6396d7b740</RecID>
+      <AssemblyFullName>JiwaApplication, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaApplication.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaApplication.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>bc32ec65-ab4c-4708-8981-3d558e404536</RecID>
+      <AssemblyFullName>mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>mscorlib.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.NET\Framework\v4.0.30319\mscorlib.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>3cc4a750-0d36-4ba4-8a2a-960c0dfef1fa</RecID>
+      <AssemblyFullName>System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System\v4.0_4.0.0.0__b77a5c561934e089\System.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>6d59d3a9-f9db-4433-aeb5-d60f9ac1ecf7</RecID>
+      <AssemblyFullName>Microsoft.VisualBasic, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>Microsoft.VisualBasic.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Microsoft.VisualBasic\v4.0_10.0.0.0__b03f5f7f11d50a3a\Microsoft.VisualBasic.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>997f1521-1c56-41b5-b43e-dfb2854165f7</RecID>
+      <AssemblyFullName>System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>System.Drawing.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System.Drawing\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Drawing.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b930f960-0e06-4581-bb18-78a4f63e922e</RecID>
+      <AssemblyFullName>JiwaODBC, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaODBC.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaODBC.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>06e8a186-b163-43ab-9e67-9c679e23817e</RecID>
+      <AssemblyFullName>System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Data.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_32\System.Data\v4.0_4.0.0.0__b77a5c561934e089\System.Data.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>af062b00-bff7-4728-a707-e47df13ee39c</RecID>
+      <AssemblyFullName>System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Xml.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System.Xml\v4.0_4.0.0.0__b77a5c561934e089\System.Xml.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>a63e18ae-71a1-48af-adec-5d5bca170066</RecID>
+      <AssemblyFullName>System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Runtime.Serialization.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System.Runtime.Serialization\v4.0_4.0.0.0__b77a5c561934e089\System.Runtime.Serialization.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>76723f14-a725-4059-ac3d-c77a15e6184d</RecID>
+      <AssemblyFullName>System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Windows.Forms.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System.Windows.Forms\v4.0_4.0.0.0__b77a5c561934e089\System.Windows.Forms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>2f3c1de9-010c-4bf7-8d02-893b959098d2</RecID>
+      <AssemblyFullName>JiwaServiceModel, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaServiceModel.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaServiceModel.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>bcb924e7-3377-47d5-aa02-d3d1ba6bdf81</RecID>
+      <AssemblyFullName>Infragistics4.Win.Misc.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.Misc.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.Misc.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.Misc.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>547812eb-4234-4a89-a3cc-d81103df2f6b</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinEditors.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinEditors.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinEditors.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinEditors.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>e6e4782b-1ddb-4b1c-99b3-b92cdaa368d1</RecID>
+      <AssemblyFullName>Infragistics4.Win.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>18afad3e-4495-46cc-bb33-5fd016c19016</RecID>
+      <AssemblyFullName>Microsoft.SqlServer.Smo, Version=14.100.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91</AssemblyFullName>
+      <AssemblyName>Microsoft.SqlServer.Smo.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\Microsoft.SqlServer.Smo.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>235a7aab-3ce5-4985-ba0b-5487e83db21d</RecID>
+      <AssemblyFullName>Microsoft.SqlServer.ConnectionInfo, Version=14.100.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91</AssemblyFullName>
+      <AssemblyName>Microsoft.SqlServer.ConnectionInfo.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\Microsoft.SqlServer.ConnectionInfo.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>43aa1fb4-ec91-40cb-b516-cf3dcd8807bd</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinExplorerBar.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinExplorerBar.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinExplorerBar.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinExplorerBar.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>90493647-3b07-4b4d-871b-1d2694d2c9a5</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinTree.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinTree.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinTree.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinTree.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>36bbbfdb-475f-40ff-abb2-bf200fed8e1d</RecID>
+      <AssemblyFullName>FarPoint.Win.Spread, Version=8.35.20151.0, Culture=neutral, PublicKeyToken=327c3516b1b18457</AssemblyFullName>
+      <AssemblyName>FarPoint.Win.Spread.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\FarPoint.Win.Spread\8.35.20151.0__327c3516b1b18457\FarPoint.Win.Spread.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b8bc5207-1303-49b3-83a3-c38c4d66869f</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinTabControl.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinTabControl.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinTabControl.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinTabControl.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>33c882b7-1540-45bb-9f75-49295c89b422</RecID>
+      <AssemblyFullName>Infragistics4.Shared.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Shared.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Shared.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Shared.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>2e7f411e-c5c4-4b59-b459-513c3ac3ca95</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinToolbars.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinToolbars.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinToolbars.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinToolbars.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>903c0015-cfed-4eb7-a02c-56176dd78eb8</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinStatusBar.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinStatusBar.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinStatusBar.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinStatusBar.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>3f6f231e-7062-4c54-8ecb-1b8ac435edfa</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinSchedule.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinSchedule.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinSchedule.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinSchedule.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>6c70b62f-d997-4ff7-9e4e-f46966c2a62d</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinListView.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinListView.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinListView.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinListView.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b4495ada-d64d-4b45-bfee-1dc1d8c77a5c</RecID>
+      <AssemblyFullName>ServiceStack, Version=5.0.0.0, Culture=neutral, PublicKeyToken=02c12cbda47e6587</AssemblyFullName>
+      <AssemblyName>ServiceStack.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\ServiceStack.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>bed1717a-948e-471c-8b0b-51716977e717</RecID>
+      <AssemblyFullName>EntityFramework, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>EntityFramework.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\EntityFramework.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>20c1e306-a7db-44ac-95e5-85507cc6bad6</RecID>
+      <AssemblyFullName>System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Core.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System.Core\v4.0_4.0.0.0__b77a5c561934e089\System.Core.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>1a0fc013-61f0-4673-943e-64eaac0c44e1</RecID>
+      <AssemblyFullName>ActiproSoftware.SyntaxEditor.WinForms, Version=16.1.330.0, Culture=neutral, PublicKeyToken=c27e062d3c1a4763</AssemblyFullName>
+      <AssemblyName>ActiproSoftware.SyntaxEditor.WinForms.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\ActiproSoftware.SyntaxEditor.WinForms\16.1.330.0__c27e062d3c1a4763\ActiproSoftware.SyntaxEditor.WinForms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>7b1dc37a-cc4d-438a-8e2d-6f16670ada2f</RecID>
+      <AssemblyFullName>ZetaHtmlEditControl, Version=1.1.0.3, Culture=neutral, PublicKeyToken=2e2e5ba5da72b6c0</AssemblyFullName>
+      <AssemblyName>ZetaHtmlEditControl.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\ZetaHtmlEditControl.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>bc6d1ff6-34e8-4e2f-909b-58cc307bcc26</RecID>
+      <AssemblyFullName>ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms, Version=16.1.330.0, Culture=neutral, PublicKeyToken=c27e062d3c1a4763</AssemblyFullName>
+      <AssemblyName>ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms\16.1.330.0__c27e062d3c1a4763\ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>f94c739c-d63f-4ef5-b885-cddc89361821</RecID>
+      <AssemblyFullName>JiwaEncryption, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaEncryption.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaEncryption.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>06f83657-9eae-42a8-8a3e-e9c5881ffae1</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinGrid.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinGrid.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinGrid.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinGrid.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>72ee4bf6-2af4-4b9d-921a-b05d548225d5</RecID>
+      <AssemblyFullName>Microsoft.SqlServer.Dac, Version=14.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>Microsoft.SqlServer.Dac.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\Microsoft.SqlServer.Dac.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>1822fa59-c977-4e39-ba79-bcbf728b6221</RecID>
+      <AssemblyFullName>CrystalDecisions.CrystalReports.Engine, Version=13.0.3500.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.CrystalReports.Engine.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\CrystalDecisions.CrystalReports.Engine\13.0.3500.0__692fbea5521e1304\CrystalDecisions.CrystalReports.Engine.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>ab1ee02f-c996-4e3b-be50-9d347c85d11e</RecID>
+      <AssemblyFullName>CrystalDecisions.Shared, Version=13.0.3500.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.Shared.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\CrystalDecisions.Shared\13.0.3500.0__692fbea5521e1304\CrystalDecisions.Shared.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>e83f3ed0-5616-4104-9e54-aa2938b2fbb7</RecID>
+      <AssemblyFullName>CrystalDecisions.ReportAppServer.Controllers, Version=13.0.3500.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.ReportAppServer.Controllers.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\CrystalDecisions.ReportAppServer.Controllers\13.0.3500.0__692fbea5521e1304\CrystalDecisions.ReportAppServer.Controllers.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>7c6dc01c-feb3-4d81-a5fe-2a6de9fb746e</RecID>
+      <AssemblyFullName>Infragistics4.Win.AppStylistSupport.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.AppStylistSupport.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.AppStylistSupport.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.AppStylistSupport.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>6e98408f-fecf-4244-b314-6600b1797af1</RecID>
+      <AssemblyFullName>JiwaLib, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaLib.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaLib.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>ef814437-f91c-4e66-ae23-ab4aa83b0a10</RecID>
+      <AssemblyFullName>Microsoft.ApplicationInsights, Version=2.4.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35</AssemblyFullName>
+      <AssemblyName>Microsoft.ApplicationInsights.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\Microsoft.ApplicationInsights.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>74223d3f-a026-406c-bc64-5dbc933e9b10</RecID>
+      <AssemblyFullName>CrystalDecisions.Windows.Forms, Version=13.0.3500.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.Windows.Forms.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\CrystalDecisions.Windows.Forms\13.0.3500.0__692fbea5521e1304\CrystalDecisions.Windows.Forms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>e6083f8d-6eb3-427e-93df-db759c776b8d</RecID>
+      <AssemblyFullName>EntityFramework.SqlServer, Version=6.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>EntityFramework.SqlServer.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\EntityFramework.SqlServer.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>0ca0bfc4-d348-44cb-b89f-5771add6ae5f</RecID>
+      <AssemblyFullName>ServiceStack.Text, Version=5.0.0.0, Culture=neutral, PublicKeyToken=02c12cbda47e6587</AssemblyFullName>
+      <AssemblyName>ServiceStack.Text.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\ServiceStack.Text.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>0a637179-1e87-4ce6-8122-38213d19d0e0</RecID>
+      <AssemblyFullName>ActiproSoftware.Shared.WinForms, Version=16.1.330.0, Culture=neutral, PublicKeyToken=c27e062d3c1a4763</AssemblyFullName>
+      <AssemblyName>ActiproSoftware.Shared.WinForms.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\ActiproSoftware.Shared.WinForms\16.1.330.0__c27e062d3c1a4763\ActiproSoftware.Shared.WinForms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>9d9a3398-23a4-477e-87d7-fa1c70f12687</RecID>
+      <AssemblyFullName>System.Security, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>System.Security.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\Microsoft.Net\assembly\GAC_MSIL\System.Security\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Security.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>45c9aab9-f7f0-4f75-bc56-04403da05d14</RecID>
+      <AssemblyFullName>FarPoint.Win, Version=8.35.20151.0, Culture=neutral, PublicKeyToken=327c3516b1b18457</AssemblyFullName>
+      <AssemblyName>FarPoint.Win.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\FarPoint.Win\8.35.20151.0__327c3516b1b18457\FarPoint.Win.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>3e3edb5d-639c-4294-99d9-4cbb76ec0950</RecID>
+      <AssemblyFullName>CrystalDecisions.ReportAppServer.ClientDoc, Version=13.0.3500.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.ReportAppServer.ClientDoc.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\CrystalDecisions.ReportAppServer.ClientDoc\13.0.3500.0__692fbea5521e1304\CrystalDecisions.ReportAppServer.ClientDoc.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>a221c960-697d-4426-a9c3-9835f1d93c5a</RecID>
+      <AssemblyFullName>CrystalDecisions.ReportAppServer.ReportDefModel, Version=13.0.3500.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.ReportAppServer.ReportDefModel.dll</AssemblyName>
+      <AssemblyLocation>C:\WINDOWS\assembly\GAC_MSIL\CrystalDecisions.ReportAppServer.ReportDefModel\13.0.3500.0__692fbea5521e1304\CrystalDecisions.ReportAppServer.ReportDefModel.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>7f3d432d-948e-4ded-8622-8395bbd40365</RecID>
+      <AssemblyFullName>ServiceStack.Interfaces, Version=5.0.0.0, Culture=neutral, PublicKeyToken=02c12cbda47e6587</AssemblyFullName>
+      <AssemblyName>ServiceStack.Interfaces.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\ServiceStack.Interfaces.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>959af9cf-f941-4677-8d93-a8ff81a6291d</RecID>
+      <AssemblyFullName>ServiceStack.Server, Version = 5.0.0.0, Culture = neutral, PublicKeyToken = 02c12cbda47e6587</AssemblyFullName>
+      <AssemblyName>ServiceStack.Server.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\ServiceStack.Server.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>bbcf7a80-8643-4cbb-bfad-67b35068d275</RecID>
+      <AssemblyFullName>ServiceStack.OrmLite, Version = 5.0.0.0, Culture = neutral, PublicKeyToken = 02c12cbda47e6587</AssemblyFullName>
+      <AssemblyName>ServiceStack.OrmLite.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\ServiceStack.OrmLite.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>42866652-727a-4257-b2ef-5b99107f682b</RecID>
+      <AssemblyFullName>JiwaSalesUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaSalesUI.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaSalesUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>c15fe780-b75d-48d2-8f36-ecad878ae500</RecID>
+      <AssemblyFullName>JiwaSales, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaSales.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaSales.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>9232a85b-2619-47a7-9e9f-4c6f3c323c30</RecID>
+      <AssemblyFullName>JiwaPriceSchemes, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaPriceSchemes.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaPriceSchemes.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>080f4e8a-e791-48b8-80b1-b4960499664a</RecID>
+      <AssemblyFullName>JiwaJobCosting, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaJobCosting.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaJobCosting.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>fdf3eb23-4369-4550-a833-28a0ab4cb3d3</RecID>
+      <AssemblyFullName>JiwaSerialNumbersUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaSerialNumbersUI.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaSerialNumbersUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>f5a4ba64-fee1-4b26-8223-a4252dc8228d</RecID>
+      <AssemblyFullName>JiwaInventory, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaInventory.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaInventory.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>311c9973-1791-4409-bad5-d2693b38a2e4</RecID>
+      <AssemblyFullName>JiwaDashboardUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaDashboardUI.dll</AssemblyName>
+      <AssemblyLocation>C:\VSTS\Jiwa 7\07.02.00\Built Files\JiwaDashboardUI.dll</AssemblyLocation>
+    </Reference>
+  </ReferenceCollection>
+  <CustomFieldCollection>
+    <CustomField>
+      <RecID>24ff0b81-f828-4d0e-8e76-93a7ce3dc82c</RecID>
+      <Name>Hero Item</Name>
+      <Description>Denotes whether this item will appear on the "Hero Items" tab of sales orders for quick order entry.</Description>
+      <DisplayOrder>1</DisplayOrder>
+      <CellType>Checkbox</CellType>
+      <CustomFieldModule>Inventory Maintenance</CustomFieldModule>
+    </CustomField>
+  </CustomFieldCollection>
+</JiwaDocument>
