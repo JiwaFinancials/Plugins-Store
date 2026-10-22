@@ -1,0 +1,269 @@
+﻿<?xml version="1.0" encoding="utf-16"?>
+<JiwaDocument xmlns:jiwa="http://www.jiwa.com.au/xml/schemas" Type="JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin">
+  <RecID>5997aeea-fe0d-459f-bab9-dce799998d13</RecID>
+  <Name>Sales Rankings</Name>
+  <Description>This plugin renames inventory category 4 to "Sales Ranking", and creates the category 4 values A, B, C, D, and X (in addition to the existing "Default - No Category" value - this would indicate that a sales ranking has not ever been calculated for this inventory item).&amp;#13;&amp;#10;&amp;#13;&amp;#10;A custom field called "Exclude from Sales Ranking Calculations" is added to warehouse maintenance. When ticked, the physical warehouse (i.e. all of it's logical warehouses) are not used in the calculation of inventory sales rankings.&amp;#13;&amp;#10;&amp;#13;&amp;#10;For testing, a button is added to the ribbon menu of the inventory maintenance form titled "Calculate Sales Rankings". This button is only visible to the "Admin" user. When clicked the following calcuation occurs:&amp;#13;&amp;#10;&amp;#13;&amp;#10;Determine the number of hits (the number of times an item has been sold - not quantity!) in the past year for each inventory item. The top 80% of these inventory items have their category 4 (now called "Sales Ranking") set to A. The next 15% get "B", the next 14% get "C", and the remaining 1% get "D". Items with no hits at all get a sales ranking of "X".&amp;#13;&amp;#10;&amp;#13;&amp;#10;Remember, physical warehouses with the custom field "Exclude from Sales Ranking Calculations" ticked are not included in the calculations. Nor are In-Transit warehouses, nor inventory items with a "Status" of "Obsolete" or "Discontinued".&amp;#13;&amp;#10;&amp;#13;&amp;#10;A schedule is also defined to run the above calculation on a weekly basis - 2am Monday mornings. Of course, the plugin scheduler must be configured and running for the sales ranking calculation to occur on this schedule.&amp;#13;&amp;#10;&amp;#13;&amp;#10;Installation Instructions&amp;#13;&amp;#10;==================&amp;#13;&amp;#10;1. Import and save this plugin.&amp;#13;&amp;#10;2. Run the SQL Script attached to the documents tab of this plugin.&amp;#13;&amp;#10;3. Exit and log back into Jiwa as admin.&amp;#13;&amp;#10;4. Load the inventory maintenance form and see that the "Calculate Sales Rankings" button exists on the ribbon menu.&amp;#13;&amp;#10;5. Click the button and see that the category 4 ("Sales Ranking") values are updated for all inventory items (you will have to refresh the current record).&amp;#13;&amp;#10;6. If you want the sales caluclation run every Monday morning at 2am, configure and start the Jiwa Plugn Scheduler Service.&amp;#13;&amp;#10;</Description>
+  <IsEnabled>true</IsEnabled>
+  <IsIsolatedToOwnAppDomain>false</IsIsolatedToOwnAppDomain>
+  <ExecutionOrder>0</ExecutionOrder>
+  <Author>Jiwa Financials</Author>
+  <Version>7.2.1.1</Version>
+  <Code>using System;
+using System.Windows.Forms;
+using System.Data.SqlClient;
+using System.Diagnostics;
+
+#region "FormPlugin"
+public class FormPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaFormPlugin
+{
+
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void SetupBeforeHandlers(JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm JiwaForm, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm JiwaForm, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+		if(Plugin.Manager.Staff.Username.ToUpper() == "ADMIN")
+		{
+	    	// Add a tool to sales order form for testing
+			JiwaFinancials.Jiwa.JiwaInventoryUI.InventoryMaintenanceForm inventoryForm = (JiwaFinancials.Jiwa.JiwaInventoryUI.InventoryMaintenanceForm)JiwaForm;
+			Infragistics.Win.UltraWinToolbars.ButtonTool buttonTool = new Infragistics.Win.UltraWinToolbars.ButtonTool("CalculateSalesRankings");
+			buttonTool.SharedProps.Caption = "Calculate Sales Rankings";
+			inventoryForm.UltraToolbarsManager1.Tools.Add(buttonTool);
+			Infragistics.Win.UltraWinToolbars.RibbonGroup group = inventoryForm.UltraToolbarsManager1.Ribbon.Tabs["Main"].Groups["Actions"];
+			group.Tools.AddTool("CalculateSalesRankings");	
+			inventoryForm.UltraToolbarsManager1.Ribbon.Tabs["Main"].Groups["Actions"].Tools["CalculateSalesRankings"].InstanceProps.PreferredSizeOnRibbon = Infragistics.Win.UltraWinToolbars.RibbonToolSize.Normal;			
+			inventoryForm.UltraToolbarsManager1.ToolClick += delegate(object sender, Infragistics.Win.UltraWinToolbars.ToolClickEventArgs e) { UltraToolbarsManager1_ToolClick(sender, e, Plugin); };			
+		}
+    }
+	
+	public void UltraToolbarsManager1_ToolClick(object sender, Infragistics.Win.UltraWinToolbars.ToolClickEventArgs e, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+	{
+		Infragistics.Win.UltraWinToolbars.UltraToolbarsManager toolbarManager = (Infragistics.Win.UltraWinToolbars.UltraToolbarsManager)sender;
+		JiwaFinancials.Jiwa.JiwaInventoryUI.InventoryMaintenanceForm inventoryForm = (JiwaFinancials.Jiwa.JiwaInventoryUI.InventoryMaintenanceForm)toolbarManager.DockWithinContainer;
+		ScheduledExecutionPlugin scheduledExecutionPlugin;
+		
+		switch(e.Tool.Key)
+		{
+			case "CalculateSalesRankings":
+				scheduledExecutionPlugin = new ScheduledExecutionPlugin();	
+				scheduledExecutionPlugin.OnServiceStart(Plugin);
+				try
+				{
+					scheduledExecutionPlugin.CalculateSalesRankings(Plugin);
+					MessageBox.Show("Sales ranking calculations completed successfully.", "Calculate Sales Rankings", MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
+				}
+				catch(Exception ex)
+				{
+					MessageBox.Show(string.Format("Sales ranking calculations failed - '{0}'", ex.Message), "Calculate Sales Rankings", MessageBoxButtons.OK, MessageBoxIcon.Error, MessageBoxDefaultButton.Button1);
+				}
+				scheduledExecutionPlugin.OnServiceStopping(Plugin);
+				
+				break;
+		}		
+	}	
+}
+#endregion
+
+#region "ScheduledExecutionPlugin"
+public class ScheduledExecutionPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaScheduledExecutionPlugin
+{
+	string pluginName = "Sales Rankings (Name not set by service start)";
+	
+    public void Execute(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin, JiwaFinancials.Jiwa.JiwaApplication.Schedule.Schedule Schedule)
+    {
+		WriteLog("Entered Execute", System.Diagnostics.EventLogEntryType.Information);
+        lock (JiwaFinancials.Jiwa.JiwaApplication.Manager.CriticalSectionFlag)
+        {
+			WriteLog("Obtained lock in Execute", System.Diagnostics.EventLogEntryType.Information);
+			try
+			{
+				CalculateSalesRankings(Plugin);
+			}
+			catch (Exception ex)
+			{
+				WriteLog(string.Format("Exception in Execute - '{0}'", ex.Message), System.Diagnostics.EventLogEntryType.Error);
+			}			
+			WriteLog("About to release lock in Execute", System.Diagnostics.EventLogEntryType.Information);
+        }
+		WriteLog("Lock released and leaving Execute", System.Diagnostics.EventLogEntryType.Information);
+    }
+
+    public void OnServiceStart(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+		pluginName = Plugin.Name;	
+    }
+
+    public void OnServiceStopping(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+	
+	public void CalculateSalesRankings(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+	{
+		WriteLog("Entered CalculateSalesRankings", System.Diagnostics.EventLogEntryType.Information);
+		try
+		{
+			JiwaFinancials.Jiwa.JiwaODBC.database db = Plugin.Manager.Database;
+			
+			using (SqlCommand SQLCmd = new SqlCommand("usp_Jiwa_Inventory_CalculateSalesRanking", db.SQLConnection, db.SQLTransaction)) 
+			{
+				SQLCmd.CommandType = System.Data.CommandType.StoredProcedure;
+				SQLCmd.CommandTimeout = db.DefaultCommandTimeout;							
+				SQLCmd.ExecuteNonQuery();
+			}	
+			WriteLog("Sales rankings calculated successfully", System.Diagnostics.EventLogEntryType.Information);
+		}
+        catch (Exception ex)
+        {
+			WriteLog(string.Format("Exception in CalculateSalesRankings - '{0}'", ex.Message), System.Diagnostics.EventLogEntryType.Error);
+            //Swallow - move on to the next
+        }  		
+		WriteLog("Leaving CalculateSalesRankings", System.Diagnostics.EventLogEntryType.Information);
+	}
+	
+    public void WriteLog(string logMessage, System.Diagnostics.EventLogEntryType eventLogEntryType)
+    {
+		EventLog.WriteEntry(".NET Runtime", logMessage, eventLogEntryType, 1000);
+    }		
+}
+#endregion</Code>
+  <ExceptionPolicy>Abort</ExceptionPolicy>
+  <Language>CSharp</Language>
+  <PluginFormCollection>
+    <PluginForm>
+      <RecID>a17a1645-8a32-4c99-8118-b59cac7ed1c6</RecID>
+      <Description>Inventory Maintenance</Description>
+      <ClassName>JiwaFinancials.Jiwa.JiwaInventoryUI.InventoryMaintenanceForm</ClassName>
+    </PluginForm>
+  </PluginFormCollection>
+  <ReferenceCollection>
+    <Reference>
+      <RecID>58cff062-6001-425f-b639-20b27502116e</RecID>
+      <AssemblyFullName>JiwaApplication, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaApplication.dll</AssemblyName>
+      <AssemblyLocation>C:\Users\scott\source\Workspaces\Jiwa 7\07.02.00\Built Files\JiwaApplication.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>88d89f68-2405-4cd5-b78f-0fc2728ebb31</RecID>
+      <AssemblyFullName>System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System\v4.0_4.0.0.0__b77a5c561934e089\System.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>d0dbac23-9c48-4340-9813-272640e34f3e</RecID>
+      <AssemblyFullName>JiwaODBC, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaODBC.dll</AssemblyName>
+      <AssemblyLocation>C:\Users\scott\source\Workspaces\Jiwa 7\07.02.00\Built Files\JiwaODBC.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>fc0648fc-f3f9-4d4f-a6ac-3410b6d9ebbb</RecID>
+      <AssemblyFullName>System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Data.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_32\System.Data\v4.0_4.0.0.0__b77a5c561934e089\System.Data.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>0c429bb7-2c3a-49e4-8a85-071347351487</RecID>
+      <AssemblyFullName>System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Windows.Forms.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Windows.Forms\v4.0_4.0.0.0__b77a5c561934e089\System.Windows.Forms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>d6bc6118-7707-44e0-8ced-6b0fd97f0f6f</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinToolbars.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinToolbars.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.UltraWinToolbars.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.UltraWinToolbars.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>c6ef286f-7962-46af-ae51-f748c3b2b3ee</RecID>
+      <AssemblyFullName>JiwaInventoryUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaInventoryUI.dll</AssemblyName>
+      <AssemblyLocation>C:\Users\scott\source\Workspaces\Jiwa 7\07.02.00\Built Files\JiwaInventoryUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>6f252b4f-2604-41bd-9934-8ddb417a66d9</RecID>
+      <AssemblyFullName>Infragistics4.Shared.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Shared.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Shared.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Shared.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>0ea80812-b9ff-44ac-ac3d-354965a63079</RecID>
+      <AssemblyFullName>Infragistics4.Win.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\Infragistics4.Win.v13.1\v4.0_13.1.20131.2060__7dd5c3163f2cd0cb\Infragistics4.Win.v13.1.dll</AssemblyLocation>
+    </Reference>
+  </ReferenceCollection>
+  <CustomFieldCollection>
+    <CustomField>
+      <RecID>8e7c059d-b624-47eb-89c5-f3592322753e</RecID>
+      <Name>Exclude from Sales Ranking Calculations</Name>
+      <Description>The logical warehouses of this physical warehouse are not used in the calculation of sales ranking for inventory items.</Description>
+      <DisplayOrder>1</DisplayOrder>
+      <CellType>Checkbox</CellType>
+      <CustomFieldModule>Warehouse Maintenance</CustomFieldModule>
+    </CustomField>
+  </CustomFieldCollection>
+  <ExecutionScheduleCollection>
+    <Schedule>
+      <RecID>8f938765-4911-4a97-a4e3-1595553cd690</RecID>
+      <Name>Mondays 2am</Name>
+      <IsEnabled>true</IsEnabled>
+      <ScheduleType>Recurring</ScheduleType>
+      <OccurrenceType>Weekly</OccurrenceType>
+      <OccurrenceFrequencyInterval>1</OccurrenceFrequencyInterval>
+      <OneTimeOccurrenceDate>2023-10-20T10:03:47.9527044+11:00</OneTimeOccurrenceDate>
+      <DailyFrequencyType>OccursOnce</DailyFrequencyType>
+      <DailyOccursOnceTime />
+      <DailyRepeatsInterval>1</DailyRepeatsInterval>
+      <DailyRepeatsStartTime>432000000000</DailyRepeatsStartTime>
+      <DailyRepeatsEndTime>432000000000</DailyRepeatsEndTime>
+      <WeeklyRepeatsInterval>1</WeeklyRepeatsInterval>
+      <WeeklyDaysOfWeek>1</WeeklyDaysOfWeek>
+      <MonthlyFrequencyType>nthDay</MonthlyFrequencyType>
+      <MonthlyDayOfMonth>1</MonthlyDayOfMonth>
+      <MonthlyRepeatInterval>1</MonthlyRepeatInterval>
+      <MonthlyFrequencyAdjective>First</MonthlyFrequencyAdjective>
+      <MonthlyFrequencyDayOfWeek>Monday</MonthlyFrequencyDayOfWeek>
+      <StartDate>2023-08-02T00:00:00</StartDate>
+      <HasEndDate>false</HasEndDate>
+      <EndDate>2023-08-02T15:08:04.17</EndDate>
+    </Schedule>
+  </ExecutionScheduleCollection>
+  <Documents>
+    <Document>
+      <RecID xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">163988e1-38ce-4e86-a0a3-6df775f4c03d</RecID>
+      <DocumentType xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">
+        <RecID xmlns="JiwaApplication.Documents">BB6E534C-73E3-4706-851D-80FA3661375C</RecID>
+        <ItemNo xmlns="JiwaApplication.Documents">1</ItemNo>
+        <Description xmlns="JiwaApplication.Documents">Default Plugin Document Type</Description>
+        <DefaultType xmlns="JiwaApplication.Documents">true</DefaultType>
+      </DocumentType>
+      <FileID xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML" />
+      <PhysicalFileName xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">Sales Rankings Install.sql</PhysicalFileName>
+      <Description xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">Deployment script - creates category 4 value, updates a system setting, and creates a stored procedure for sales ranking calculations.</Description>
+      <LastSavedDateTime xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">2023-10-20T10:03:47.923</LastSavedDateTime>
+      <LastModifiedByStaffMember xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">
+        <RecID xmlns="Entities.Staff">ZZZZZZZZZZ0000000000</RecID>
+        <StaffID xmlns="Entities.Staff">ZZZZZZZZZZ0000000000</StaffID>
+        <UserName xmlns="Entities.Staff">Admin</UserName>
+        <Title xmlns="Entities.Staff" />
+        <FirstName xmlns="Entities.Staff">Admin</FirstName>
+        <Surname xmlns="Entities.Staff">Admin</Surname>
+        <EmailAddress xmlns="Entities.Staff" />
+        <EmailDisplayName xmlns="Entities.Staff" />
+        <SMTPUsername xmlns="Entities.Staff" />
+        <SMTPPassword xmlns="Entities.Staff" />
+        <IsActive xmlns="Entities.Staff">true</IsActive>
+        <IsEnabled xmlns="Entities.Staff">true</IsEnabled>
+      </LastModifiedByStaffMember>
+      <FileBinary xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">VVBEQVRFIFNZX1N5c1ZhbHVlcyBTRVQgQ29udGVudHMgPSAnU2FsZXMgUmFua2luZycgV0hFUkUgU2VjdGlvbiA9ICdJbnZlbnRvcnlQYXJhbXMnIEFORCBJREtleSA9ICdDYXRlZ29yeTQnDQpHTw0KDQpJRiBOT1QgRVhJU1RTIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnQScpDQoJSU5TRVJUIElOVE8gSU5fQ2F0ZWdvcnk0IA0KCVNFTEVDVCBMRUZUKFJFUExBQ0UoTkVXSUQoKSwgJy0nLCAnJyksIDIwKSwgJ0EnLCAwLCBHRVREQVRFKCksIE5VTEwNCkdPDQoNCklGIE5PVCBFWElTVFMgKFNFTEVDVCBUT1AgMSBDYXRlZ29yeTRJRCBGUk9NIElOX0NhdGVnb3J5NCBXSEVSRSBEZXNjcmlwdGlvbiA9ICdCJykNCglJTlNFUlQgSU5UTyBJTl9DYXRlZ29yeTQgDQoJU0VMRUNUIExFRlQoUkVQTEFDRShORVdJRCgpLCAnLScsICcnKSwgMjApLCAnQicsIDAsIEdFVERBVEUoKSwgTlVMTA0KR08NCg0KSUYgTk9UIEVYSVNUUyAoU0VMRUNUIFRPUCAxIENhdGVnb3J5NElEIEZST00gSU5fQ2F0ZWdvcnk0IFdIRVJFIERlc2NyaXB0aW9uID0gJ0MnKQ0KCUlOU0VSVCBJTlRPIElOX0NhdGVnb3J5NCANCglTRUxFQ1QgTEVGVChSRVBMQUNFKE5FV0lEKCksICctJywgJycpLCAyMCksICdDJywgMCwgR0VUREFURSgpLCBOVUxMDQpHTw0KDQpJRiBOT1QgRVhJU1RTIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnRCcpDQoJSU5TRVJUIElOVE8gSU5fQ2F0ZWdvcnk0IA0KCVNFTEVDVCBMRUZUKFJFUExBQ0UoTkVXSUQoKSwgJy0nLCAnJyksIDIwKSwgJ0QnLCAwLCBHRVREQVRFKCksIE5VTEwNCkdPDQoNCklGIE5PVCBFWElTVFMgKFNFTEVDVCBUT1AgMSBDYXRlZ29yeTRJRCBGUk9NIElOX0NhdGVnb3J5NCBXSEVSRSBEZXNjcmlwdGlvbiA9ICdYJykNCglJTlNFUlQgSU5UTyBJTl9DYXRlZ29yeTQgDQoJU0VMRUNUIExFRlQoUkVQTEFDRShORVdJRCgpLCAnLScsICcnKSwgMjApLCAnWCcsIDAsIEdFVERBVEUoKSwgTlVMTA0KR08NCg0KSUYgIEVYSVNUUyAoU0VMRUNUICogRlJPTSBzeXMub2JqZWN0cyBXSEVSRSBvYmplY3RfaWQgPSBPQkpFQ1RfSUQoTidbZGJvXS5bdXNwX0ppd2FfSW52ZW50b3J5X0NhbGN1bGF0ZVNhbGVzUmFua2luZ10nKSBBTkQgdHlwZSBpbiAoTidQJywgTidQQycpKQ0KCURST1AgUFJPQ0VEVVJFIFtkYm9dLlt1c3BfSml3YV9JbnZlbnRvcnlfQ2FsY3VsYXRlU2FsZXNSYW5raW5nXQ0KR08NCg0KQ1JFQVRFIFBST0NFRFVSRSB1c3BfSml3YV9JbnZlbnRvcnlfQ2FsY3VsYXRlU2FsZXNSYW5raW5nDQpBUw0KLS1Vc2VkIGJ5Og0KLS0NCi0tUGx1Z2luICJTYWxlcyBSYW5raW5ncyINCg0KU0VUIE5PQ09VTlQgT04gDQoNCkRFQ0xBUkUgQFNQX0luY2x1ZGVJblRyYW5zaXRXYXJlaG91c2VzIEJJVCA9IDAgDQpERUNMQVJFIEBTUF9JbmNsdWRlT2Jzb2xldGVJdGVtcyBCSVQgPSAwDQpERUNMQVJFIEBTUF9JbmNsdWRlRGlzY29udGludWVkSXRlbXMgQklUID0gMA0KDQpERUNMQVJFIEBNb25leURlY2ltYWxQbGFjZXMgVElOWUlOVA0KU0VMRUNUIFRPUCAxIEBNb25leURlY2ltYWxQbGFjZXMgPSBEZWNpbWFsUGxhY2VzIEZST00gRlhfQ3VycmVuY3kgV0hFUkUgSXNMb2NhbCA9IDENCg0KQ1JFQVRFIFRBQkxFICNURU1QX0lOX1NhbGVzUmFua2luZw0KKA0KCVJlY0lEIENIQVIoMzYpIENPTExBVEUgZGF0YWJhc2VfZGVmYXVsdCBOT1QgTlVMTCwNCglJbnZlbnRvcnlJRCBDSEFSKDIwKSBDT0xMQVRFIGRhdGFiYXNlX2RlZmF1bHQgTk9UIE5VTEwsCQ0KCVBhcnRObyBWQVJDSEFSKDUwKSBDT0xMQVRFIGRhdGFiYXNlX2RlZmF1bHQgTk9UIE5VTEwsDQoJSGl0cyBJTlRFR0VSIE5PVCBOVUxMLA0KCUFjY3VtdWxhdGVkSGl0cyBJTlRFR0VSIE5PVCBOVUxMLA0KCUFjY3VtdWxhdGVkSGl0UGVyY2VudGFnZSBERUNJTUFMKDE5LDYpIE5PVCBOVUxMLAkNCglTYWxlc1JhbmsgQ0hBUigxKSBDT0xMQVRFIGRhdGFiYXNlX2RlZmF1bHQgTk9UIE5VTEwsDQoJU2FsZXNRdWFudGl0eSBERUNJTUFMKDE5LDYpIE5PVCBOVUxMLA0KCVNhbGVzVmFsdWUgREVDSU1BTCgxOSw2KSBOT1QgTlVMTCwNCglTT0hRdWFudGl0eSBERUNJTUFMKDE5LDYpIE5PVCBOVUxMLA0KCVNPSFZhbHVlIERFQ0lNQUwoMTksNikgTk9UIE5VTEwsDQoJUXVhbnRpdHlEZWNpbWFscyBTTUFMTElOVCBOT1QgTlVMTCwNCglNb25leURlY2ltYWxzIFNNQUxMSU5UIE5PVCBOVUxMLA0KCVByb2Nlc3NlZCBCSVQNCikNCg0KREVDTEFSRSBAVmVyc2lvbiBWQVJDSEFSKE1BWCkNClNFTEVDVCBAVmVyc2lvbiA9IEBAVkVSU0lPTg0KDQpJRiBOT1QgQFZlcnNpb24gTElLRSAnJUF6dXJlJScNCkJFR0lODQoJQ1JFQVRFIFVOSVFVRSBDTFVTVEVSRUQgSU5ERVggUEtfVEVNUF9JTl9TYWxlc1JhbmtpbmcgT04gI1RFTVBfSU5fU2FsZXNSYW5raW5nKFJlY0lEKQ0KDQoJQ1JFQVRFIE5PTkNMVVNURVJFRCBJTkRFWCBJWF9URU1QX0lOX1NhbGVzUmFua2luZ19QYXJ0Tm8gT04gI1RFTVBfSU5fU2FsZXNSYW5raW5nDQoJCSgNCgkJUGFydE5vDQoJCSkgT04gW1BSSU1BUlldDQoNCglDUkVBVEUgTk9OQ0xVU1RFUkVEIElOREVYIElYX1RFTVBfSU5fU2FsZXNSYW5raW5nX0hpdHMgT04gI1RFTVBfSU5fU2FsZXNSYW5raW5nDQoJCSgNCgkJSGl0cw0KCQkpICBPTiBbUFJJTUFSWV0NCkVORA0KDQpERUNMQVJFIEBSZWNJRCBDSEFSKDM2KQ0KREVDTEFSRSBASW52ZW50b3J5SUQgQ0hBUigzNikNCkRFQ0xBUkUgQFBhcnRObyBWQVJDSEFSKDUwKQ0KREVDTEFSRSBASGl0cyBERUNJTUFMKDE5LDYpDQpERUNMQVJFIEBBY2N1bXVsYXRlZEhpdHMgREVDSU1BTCgxOSw2KQ0KREVDTEFSRSBAQWNjdW11bGF0ZWRIaXRQZXJjZW50YWdlIERFQ0lNQUwoMTksNikNCkRFQ0xBUkUgQFRvdGFsSGl0cyBERUNJTUFMKDE5LDYpDQpERUNMQVJFIEBTYWxlc1JhbmsgQ0hBUigxKQ0KDQotLSAgICBlX0ludmVudG9yeVN0YXR1c05vcm1hbCA9IDANCi0tICAgIGVfSW52ZW50b3J5U3RhdHVzRGlzY29udGludWVkID0gMQ0KLS0gICAgZV9JbnZlbnRvcnlTdGF0dXNEZWxldGVkID0gMg0KLS0gICAgZV9JbnZlbnRvcnlTdGF0dXNTbG93ID0gMw0KLS0gICAgZV9JbnZlbnRvcnlTdGF0dXNPYnNvbGV0ZSA9IDQNCg0KCUlOU0VSVCBJTlRPICNURU1QX0lOX1NhbGVzUmFua2luZw0KCVNFTEVDVCBOZXdJRCgpLCBJTl9NYWluLkludmVudG9yeUlELCBJTl9NYWluLlBhcnRObywgMCwgMCwgMCwgJ1gnLA0KCQkJKA0KCQkJCVNFTEVDVCBDT0FMRVNDRShTVU0oU09fTGluZXMuUXVhbnRpdHlUaGlzRGVsKSwgMCkJCQ0KCQkJCUZST00gU09fTGluZXMNCgkJCQlMRUZUIEpPSU4gU09fSGlzdG9yeSBPTiBTT19IaXN0b3J5Lkludm9pY2VIaXN0b3J5SUQgPSBTT19MaW5lcy5JbnZvaWNlSGlzdG9yeUlEDQoJCQkJTEVGVCBKT0lOIFNPX01haW4gT04gU09fTWFpbi5JbnZvaWNlSUQgPSBTT19IaXN0b3J5Lkludm9pY2VJRA0KCQkJCUxFRlQgSk9JTiBJTl9Mb2dpY2FsIE9OIElOX0xvZ2ljYWwuSU5fTG9naWNhbElEID0gU09fTWFpbi5JTl9Mb2dpY2FsSUQNCgkJCQlMRUZUIEpPSU4gSU5fUGh5c2ljYWwgT04gSU5fTG9naWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWwuSU5fUGh5c2ljYWxJRA0KCQkJCVdIRVJFIFNPX0xpbmVzLkludmVudG9yeUlEID0gSU5fTWFpbi5JbnZlbnRvcnlJRA0KCQkJCUFORCBDT0FMRVNDRShTT19IaXN0b3J5LlJ1bk5vLCdOVUxMJykgPD4gJycNCgkJCQlBTkQgQ09BTEVTQ0UoU09fTGluZXMuS2l0dGluZ1N0YXR1cywgMCkgPD4gMQ0KCQkJCUFORCBDT0FMRVNDRShTT19MaW5lcy5RdWFudGl0eVRoaXNEZWwsIC0xKSA8PiAwCQkJDQoJCQkJQU5EIENPQUxFU0NFKFNPX01haW4uQ3JlZGl0Tm90ZSwgMCkgPSAwDQoJCQkJQU5EIERBVEVESUZGKG1vbnRoLCBDT0FMRVNDRShTT19IaXN0b3J5LkRhdGVQb3N0ZWQsIEdFVERBVEUoKSksIEdFVERBVEUoKSkgPD0gMTINCgkJCQlBTkQgSU5fTG9naWNhbC5JTl9Mb2dpY2FsSUQgTk9UIElOIChTRUxFQ1QgSU5fTG9naWNhbElEIEZST00gSU5fTG9naWNhbCBKT0lOIElOX1BoeXNpY2FsIE9OIElOX0xvZ2ljYWwuSU5fUGh5c2ljYWxJRCA9IElOX1BoeXNpY2FsLklOX1BoeXNpY2FsSUQgSk9JTiBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVZhbHVlcyBPTiBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuSU5fUGh5c2ljYWxfUmVjSUQgV0hFUkUgSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuU2V0dGluZ0lEID0gKFNFTEVDVCBUT1AgMSBTZXR0aW5nSUQgRlJPTSBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVNldHRpbmcgV0hFUkUgU2V0dGluZ05hbWUgPSAnRXhjbHVkZSBmcm9tIFNhbGVzIFJhbmtpbmcgQ2FsY3VsYXRpb25zJyBBTkQgU1lfUGx1Z2luX1JlY0lEID0gKFNFTEVDVCBUT1AgMSBSZWNJRCBGUk9NIFNZX1BsdWdpbiBXSEVSRSBOYW1lID0gJ1NhbGVzIFJhbmtpbmdzJykpIEFORCBVUFBFUihDb250ZW50cykgPSAnVFJVRScgKQ0KCQkJCUFORCAoQFNQX0luY2x1ZGVJblRyYW5zaXRXYXJlaG91c2VzID0gMSBPUiAoSU5fTG9naWNhbC5JblRyYW5zaXQgPSAwKSkNCgkJCSksIA0KCQkJKA0KCQkJCVNFTEVDVCBDT0FMRVNDRShTVU0oU09fTGluZXMuQ3VycmVudExpbmVUb3RhbCAtIFNPX0xpbmVzLlRheFRvQ2hhcmdlKSwgMCkJCQ0KCQkJCUZST00gU09fTGluZXMNCgkJCQlMRUZUIE9VVEVSIEpPSU4gU09fSGlzdG9yeSBPTiBTT19IaXN0b3J5Lkludm9pY2VIaXN0b3J5SUQgPSBTT19MaW5lcy5JbnZvaWNlSGlzdG9yeUlEDQoJCQkJTEVGVCBPVVRFUiBKT0lOIFNPX01haW4gT04gU09fTWFpbi5JbnZvaWNlSUQgPSBTT19IaXN0b3J5Lkludm9pY2VJRA0KCQkJCUxFRlQgT1VURVIgSk9JTiBJTl9Mb2dpY2FsIE9OIElOX0xvZ2ljYWwuSU5fTG9naWNhbElEID0gU09fTWFpbi5JTl9Mb2dpY2FsSUQNCgkJCQlMRUZUIE9VVEVSIEpPSU4gSU5fUGh5c2ljYWwgT04gSU5fTG9naWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWwuSU5fUGh5c2ljYWxJRA0KCQkJCVdIRVJFIFNPX0xpbmVzLkludmVudG9yeUlEID0gSU5fTWFpbi5JbnZlbnRvcnlJRA0KCQkJCUFORCBDT0FMRVNDRShTT19IaXN0b3J5LlJ1bk5vLCdOVUxMJykgPD4gJycNCgkJCQlBTkQgQ09BTEVTQ0UoU09fTGluZXMuS2l0dGluZ1N0YXR1cywgMCkgPD4gMQ0KCQkJCUFORCBDT0FMRVNDRShTT19MaW5lcy5RdWFudGl0eVRoaXNEZWwsIC0xKSA8PiAwCQkJDQoJCQkJQU5EIENPQUxFU0NFKFNPX01haW4uQ3JlZGl0Tm90ZSwgMCkgPSAwDQoJCQkJQU5EIERBVEVESUZGKG1vbnRoLCBDT0FMRVNDRShTT19IaXN0b3J5LkRhdGVQb3N0ZWQsIEdFVERBVEUoKSksIEdFVERBVEUoKSkgPD0gMTINCgkJCQlBTkQgSU5fTG9naWNhbC5JTl9Mb2dpY2FsSUQgTk9UIElOIChTRUxFQ1QgSU5fTG9naWNhbElEIEZST00gSU5fTG9naWNhbCBKT0lOIElOX1BoeXNpY2FsIE9OIElOX0xvZ2ljYWwuSU5fUGh5c2ljYWxJRCA9IElOX1BoeXNpY2FsLklOX1BoeXNpY2FsSUQgSk9JTiBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVZhbHVlcyBPTiBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuSU5fUGh5c2ljYWxfUmVjSUQgV0hFUkUgSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuU2V0dGluZ0lEID0gKFNFTEVDVCBUT1AgMSBTZXR0aW5nSUQgRlJPTSBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVNldHRpbmcgV0hFUkUgU2V0dGluZ05hbWUgPSAnRXhjbHVkZSBmcm9tIFNhbGVzIFJhbmtpbmcgQ2FsY3VsYXRpb25zJyBBTkQgU1lfUGx1Z2luX1JlY0lEID0gKFNFTEVDVCBUT1AgMSBSZWNJRCBGUk9NIFNZX1BsdWdpbiBXSEVSRSBOYW1lID0gJ1NhbGVzIFJhbmtpbmdzJykpIEFORCBVUFBFUihDb250ZW50cykgPSAnVFJVRScgKQ0KCQkJCUFORCAoQFNQX0luY2x1ZGVJblRyYW5zaXRXYXJlaG91c2VzID0gMSBPUiAoSU5fTG9naWNhbC5JblRyYW5zaXQgPSAwKSkNCgkJCSksDQoJCQkoDQoJCQkJU0VMRUNUIENPQUxFU0NFKFNVTShJTl9TT0guUXVhbnRpdHlMZWZ0KSwgMCkgDQoJCQkJRlJPTSBJTl9TT0gNCgkJCQlKT0lOIElOX0xvZ2ljYWwgT04gSU5fTG9naWNhbC5JTl9Mb2dpY2FsSUQgPSBJTl9TT0guSU5fTG9naWNhbElEDQoJCQkJSk9JTiBJTl9QaHlzaWNhbCBPTiBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEID0gSU5fTG9naWNhbC5JTl9QaHlzaWNhbElEDQoJCQkJV0hFUkUgSU5fU09ILkludmVudG9yeUlEID0gSU5fTWFpbi5JbnZlbnRvcnlJRCANCgkJCQlBTkQgSU5fTG9naWNhbC5JTl9Mb2dpY2FsSUQgTk9UIElOIChTRUxFQ1QgSU5fTG9naWNhbElEIEZST00gSU5fTG9naWNhbCBKT0lOIElOX1BoeXNpY2FsIE9OIElOX0xvZ2ljYWwuSU5fUGh5c2ljYWxJRCA9IElOX1BoeXNpY2FsLklOX1BoeXNpY2FsSUQgSk9JTiBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVZhbHVlcyBPTiBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuSU5fUGh5c2ljYWxfUmVjSUQgV0hFUkUgSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuU2V0dGluZ0lEID0gKFNFTEVDVCBUT1AgMSBTZXR0aW5nSUQgRlJPTSBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVNldHRpbmcgV0hFUkUgU2V0dGluZ05hbWUgPSAnRXhjbHVkZSBmcm9tIFNhbGVzIFJhbmtpbmcgQ2FsY3VsYXRpb25zJyBBTkQgU1lfUGx1Z2luX1JlY0lEID0gKFNFTEVDVCBUT1AgMSBSZWNJRCBGUk9NIFNZX1BsdWdpbiBXSEVSRSBOYW1lID0gJ1NhbGVzIFJhbmtpbmdzJykpIEFORCBVUFBFUihDb250ZW50cykgPSAnVFJVRScgKQ0KCQkJCUFORCAoQFNQX0luY2x1ZGVJblRyYW5zaXRXYXJlaG91c2VzID0gMSBPUiAoSU5fTG9naWNhbC5JblRyYW5zaXQgPSAwKSkNCgkJCSksIA0KCQkJKA0KCQkJCVNFTEVDVCBDT0FMRVNDRShTVU0oSU5fU09ILlF1YW50aXR5TGVmdCAqIElOX1NPSC5MQ29zdEluKSwgMCkgDQoJCQkJRlJPTSBJTl9TT0gNCgkJCQlKT0lOIElOX0xvZ2ljYWwgT04gSU5fTG9naWNhbC5JTl9Mb2dpY2FsSUQgPSBJTl9TT0guSU5fTG9naWNhbElEDQoJCQkJSk9JTiBJTl9QaHlzaWNhbCBPTiBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEID0gSU5fTG9naWNhbC5JTl9QaHlzaWNhbElEDQoJCQkJV0hFUkUgSU5fU09ILkludmVudG9yeUlEID0gSU5fTWFpbi5JbnZlbnRvcnlJRCANCgkJCQlBTkQgSU5fTG9naWNhbC5JTl9Mb2dpY2FsSUQgTk9UIElOIChTRUxFQ1QgSU5fTG9naWNhbElEIEZST00gSU5fTG9naWNhbCBKT0lOIElOX1BoeXNpY2FsIE9OIElOX0xvZ2ljYWwuSU5fUGh5c2ljYWxJRCA9IElOX1BoeXNpY2FsLklOX1BoeXNpY2FsSUQgSk9JTiBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVZhbHVlcyBPTiBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuSU5fUGh5c2ljYWxfUmVjSUQgV0hFUkUgSU5fUGh5c2ljYWxXYXJlaG91c2VDdXN0b21WYWx1ZXMuU2V0dGluZ0lEID0gKFNFTEVDVCBUT1AgMSBTZXR0aW5nSUQgRlJPTSBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVNldHRpbmcgV0hFUkUgU2V0dGluZ05hbWUgPSAnRXhjbHVkZSBmcm9tIFNhbGVzIFJhbmtpbmcgQ2FsY3VsYXRpb25zJyBBTkQgU1lfUGx1Z2luX1JlY0lEID0gKFNFTEVDVCBUT1AgMSBSZWNJRCBGUk9NIFNZX1BsdWdpbiBXSEVSRSBOYW1lID0gJ1NhbGVzIFJhbmtpbmdzJykpIEFORCBVUFBFUihDb250ZW50cykgPSAnVFJVRScgKQ0KCQkJCUFORCAoQFNQX0luY2x1ZGVJblRyYW5zaXRXYXJlaG91c2VzID0gMSBPUiAoSU5fTG9naWNhbC5JblRyYW5zaXQgPSAwKSkNCgkJCSksIA0KCQkJSU5fTWFpbi5EZWNpbWFsUGxhY2VzLCANCgkJCUBNb25leURlY2ltYWxQbGFjZXMsDQoJCQkwDQoJRlJPTSBJTl9NYWluDQoJV0hFUkUgKA0KCQkJKElOX01haW4uU3RhdHVzID0gMCBPUiBJTl9NYWluLlN0YXR1cyA9IDMpIE9SIA0KCQkJKEBTUF9JbmNsdWRlT2Jzb2xldGVJdGVtcyA9IDEgQU5EIChJTl9NYWluLlN0YXR1cyA9IDAgT1IgSU5fTWFpbi5TdGF0dXMgPSAzIE9SIElOX01haW4uU3RhdHVzID0gNCkpIE9SDQoJCQkoQFNQX0luY2x1ZGVEaXNjb250aW51ZWRJdGVtcyA9IDEgQU5EIChJTl9NYWluLlN0YXR1cyA9IDAgT1IgSU5fTWFpbi5TdGF0dXMgPSAzIE9SIElOX01haW4uU3RhdHVzID0gMSkpDQoJCSAgICkNCg0KCVVQREFURSBTYWxlc1JhbmtpbmcNCglTRVQgSGl0cyA9IA0KCQkoDQoJCVNFTEVDVCBDT0FMRVNDRShDT1VOVChTT19MaW5lcy5JbnZvaWNlTGluZUlEKSwgMCkJCQ0KCQlGUk9NIFNPX0xpbmVzDQoJCUxFRlQgT1VURVIgSk9JTiBTT19IaXN0b3J5IE9OIFNPX0hpc3RvcnkuSW52b2ljZUhpc3RvcnlJRCA9IFNPX0xpbmVzLkludm9pY2VIaXN0b3J5SUQNCgkJTEVGVCBPVVRFUiBKT0lOIFNPX01haW4gT04gU09fTWFpbi5JbnZvaWNlSUQgPSBTT19IaXN0b3J5Lkludm9pY2VJRA0KCQlMRUZUIE9VVEVSIEpPSU4gSU5fTG9naWNhbCBPTiBJTl9Mb2dpY2FsLklOX0xvZ2ljYWxJRCA9IFNPX01haW4uSU5fTG9naWNhbElEDQoJICAgIExFRlQgT1VURVIgSk9JTiBJTl9QaHlzaWNhbCBPTiBJTl9Mb2dpY2FsLklOX1BoeXNpY2FsSUQgPSBJTl9QaHlzaWNhbC5JTl9QaHlzaWNhbElEDQoJCVdIRVJFIFNPX0xpbmVzLkludmVudG9yeUlEID0gU2FsZXNSYW5raW5nLkludmVudG9yeUlEDQoJCUFORCBDT0FMRVNDRShTT19IaXN0b3J5LlJ1bk5vLCdOVUxMJykgPD4gJycNCgkJQU5EIENPQUxFU0NFKFNPX0xpbmVzLktpdHRpbmdTdGF0dXMsIDApIDw+IDENCgkJQU5EIENPQUxFU0NFKFNPX0xpbmVzLlF1YW50aXR5VGhpc0RlbCwgLTEpIDw+IDAJCQkNCgkJQU5EIENPQUxFU0NFKFNPX01haW4uQ3JlZGl0Tm90ZSwgMCkgPSAwDQoJCUFORCBEQVRFRElGRihtb250aCwgQ09BTEVTQ0UoU09fSGlzdG9yeS5EYXRlUG9zdGVkLCBHRVREQVRFKCkpLCBHRVREQVRFKCkpIDw9IDEyDQoJCUFORCBJTl9Mb2dpY2FsLklOX0xvZ2ljYWxJRCBOT1QgSU4gKFNFTEVDVCBJTl9Mb2dpY2FsSUQgRlJPTSBJTl9Mb2dpY2FsIEpPSU4gSU5fUGh5c2ljYWwgT04gSU5fTG9naWNhbC5JTl9QaHlzaWNhbElEID0gSU5fUGh5c2ljYWwuSU5fUGh5c2ljYWxJRCBKT0lOIElOX1BoeXNpY2FsV2FyZWhvdXNlQ3VzdG9tVmFsdWVzIE9OIElOX1BoeXNpY2FsLklOX1BoeXNpY2FsSUQgPSBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVZhbHVlcy5JTl9QaHlzaWNhbF9SZWNJRCBXSEVSRSBJTl9QaHlzaWNhbFdhcmVob3VzZUN1c3RvbVZhbHVlcy5TZXR0aW5nSUQgPSAoU0VMRUNUIFRPUCAxIFNldHRpbmdJRCBGUk9NIElOX1BoeXNpY2FsV2FyZWhvdXNlQ3VzdG9tU2V0dGluZyBXSEVSRSBTZXR0aW5nTmFtZSA9ICdFeGNsdWRlIGZyb20gU2FsZXMgUmFua2luZyBDYWxjdWxhdGlvbnMnIEFORCBTWV9QbHVnaW5fUmVjSUQgPSAoU0VMRUNUIFRPUCAxIFJlY0lEIEZST00gU1lfUGx1Z2luIFdIRVJFIE5hbWUgPSAnU2FsZXMgUmFua2luZ3MnKSkgQU5EIFVQUEVSKENvbnRlbnRzKSA9ICdUUlVFJyApDQoJCUFORCAoQFNQX0luY2x1ZGVJblRyYW5zaXRXYXJlaG91c2VzID0gMSBPUiAoSU5fTG9naWNhbC5JblRyYW5zaXQgPSAwKSkNCgkJKQ0KCUZST00gI1RFTVBfSU5fU2FsZXNSYW5raW5nIFNhbGVzUmFua2luZw0KCQkNCglTRVQgQEFjY3VtdWxhdGVkSGl0cyA9IDANCg0KCURFQ0xBUkUgcnRfY3Vyc29yIENVUlNPUg0KCUZPUg0KCVNFTEVDVCBSZWNJRCwgSGl0cw0KCUZST00gI1RFTVBfSU5fU2FsZXNSYW5raW5nDQoJT1JERVIgQlkgSGl0cyBERVNDLCBQYXJ0Tm8NCiANCglPUEVOIHJ0X2N1cnNvcg0KIA0KCUZFVENIIE5FWFQgRlJPTSBydF9jdXJzb3IgSU5UTyBAUmVjSUQsIEBIaXRzDQogDQoJV0hJTEUgQEBGRVRDSF9TVEFUVVMgPSAwDQoJCUJFR0lODQoJCQlTRVQgQEFjY3VtdWxhdGVkSGl0cyA9IEBBY2N1bXVsYXRlZEhpdHMgKyBASGl0cw0KCQkJDQoJCQlVUERBVEUgI1RFTVBfSU5fU2FsZXNSYW5raW5nIFNFVCBQcm9jZXNzZWQgPSAxLCBBY2N1bXVsYXRlZEhpdHMgPSBAQWNjdW11bGF0ZWRIaXRzIFdIRVJFIFJlY0lEID0gQFJlY0lEDQoJCQlGRVRDSCBORVhUIEZST00gcnRfY3Vyc29yIElOVE8gIEBSZWNJRCwgQEhpdHMNCgkJRU5EDQogDQoJQ0xPU0UgcnRfY3Vyc29yDQoJREVBTExPQ0FURSBydF9jdXJzb3INCg0KCVNFTEVDVCBAVG90YWxIaXRzID0gQ09BTEVTQ0UoU1VNKEhpdHMpLCAwKSBGUk9NICNURU1QX0lOX1NhbGVzUmFua2luZw0KDQoJLS1TRUxFQ1QgSU5fTWFpbi5QYXJ0Tm8sIElOX01haW4uRGVzY3JpcHRpb24sIEEuSGl0cywgQS5BY2N1bXVsYXRlZEhpdHMsDQoJLS1DQVNUKENBU0UgV0hFTiBAVG90YWxIaXRzID0gMCBUSEVOIDAgRUxTRSBST1VORCgoQWNjdW11bGF0ZWRIaXRzIC8gQFRvdGFsSGl0cykgKiAxMDAsIDIpIEVORCBBUyBERUNJTUFMKDE5LDYpKSBbQWNjdW11bGF0ZWRIaXRQZXJjZW50YWdlXSwNCgktLUNBU0UgDQoJLS1XSEVOIENBU1QoQ0FTRSBXSEVOIEBUb3RhbEhpdHMgPSAwIFRIRU4gMCBFTFNFIFJPVU5EKChBY2N1bXVsYXRlZEhpdHMgLyBAVG90YWxIaXRzKSAqIDEwMCwgMikgRU5EIEFTIERFQ0lNQUwoMTksNikpIDw9IDgwIFRIRU4gJ0EnIA0KCS0tV0hFTiBDQVNUKENBU0UgV0hFTiBAVG90YWxIaXRzID0gMCBUSEVOIDAgRUxTRSBST1VORCgoQWNjdW11bGF0ZWRIaXRzIC8gQFRvdGFsSGl0cykgKiAxMDAsIDIpIEVORCBBUyBERUNJTUFMKDE5LDYpKSA+IDgwIEFORCBDQVNUKENBU0UgV0hFTiBAVG90YWxIaXRzID0gMCBUSEVOIDAgRUxTRSBST1VORCgoQWNjdW11bGF0ZWRIaXRzIC8gQFRvdGFsSGl0cykgKiAxMDAsIDIpIEVORCBBUyBERUNJTUFMKDE5LDYpKSA8PSA5NSBUSEVOICdCJyANCgktLVdIRU4gQ0FTVChDQVNFIFdIRU4gQFRvdGFsSGl0cyA9IDAgVEhFTiAwIEVMU0UgUk9VTkQoKEFjY3VtdWxhdGVkSGl0cyAvIEBUb3RhbEhpdHMpICogMTAwLCAyKSBFTkQgQVMgREVDSU1BTCgxOSw2KSkgPiA5NSBBTkQgQ0FTVChDQVNFIFdIRU4gQFRvdGFsSGl0cyA9IDAgVEhFTiAwIEVMU0UgUk9VTkQoKEFjY3VtdWxhdGVkSGl0cyAvIEBUb3RhbEhpdHMpICogMTAwLCAyKSBFTkQgQVMgREVDSU1BTCgxOSw2KSkgPD0gOTkgVEhFTiAnQycgDQoJLS1XSEVOIENBU1QoQ0FTRSBXSEVOIEBUb3RhbEhpdHMgPSAwIFRIRU4gMCBFTFNFIFJPVU5EKChBY2N1bXVsYXRlZEhpdHMgLyBAVG90YWxIaXRzKSAqIDEwMCwgMikgRU5EIEFTIERFQ0lNQUwoMTksNikpID4gOTkgQU5EIENBU1QoQ0FTRSBXSEVOIEBUb3RhbEhpdHMgPSAwIFRIRU4gMCBFTFNFIFJPVU5EKChBY2N1bXVsYXRlZEhpdHMgLyBAVG90YWxIaXRzKSAqIDEwMCwgMikgRU5EIEFTIERFQ0lNQUwoMTksNikpIDw9IDEwMCBBTkQgSGl0cyA+IDAgVEhFTiAnRCcgDQoJLS1FTFNFICdYJyANCgktLUVORCBbU2FsZXNSYW5rXSwNCgktLVNhbGVzUXVhbnRpdHksIFNhbGVzVmFsdWUsIFNPSFF1YW50aXR5LCBTT0hWYWx1ZSwgUXVhbnRpdHlEZWNpbWFscywgTW9uZXlEZWNpbWFscw0KCS0tRlJPTSAjVEVNUF9JTl9TYWxlc1JhbmtpbmcgQQ0KCS0tSk9JTiBJTl9NYWluIE9OIElOX01haW4uSW52ZW50b3J5SUQgPSAgQS5JbnZlbnRvcnlJRA0KCS0tT1JERVIgQlkgSGl0cyBERVNDLCBQYXJ0Tm8NCg0KCVVQREFURSBJIFNFVCBDYXRhZ29yeTRJRCA9IA0KCSgNCglDQVNFIA0KCVdIRU4gRVhJU1RTIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnQScpIEFORCBDQVNUKENBU0UgV0hFTiBAVG90YWxIaXRzID0gMCBUSEVOIDAgRUxTRSBST1VORCgoQWNjdW11bGF0ZWRIaXRzIC8gQFRvdGFsSGl0cykgKiAxMDAsIDIpIEVORCBBUyBERUNJTUFMKDE5LDYpKSA8PSA4MCBUSEVOIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnQScpDQoJV0hFTiBFWElTVFMgKFNFTEVDVCBUT1AgMSBDYXRlZ29yeTRJRCBGUk9NIElOX0NhdGVnb3J5NCBXSEVSRSBEZXNjcmlwdGlvbiA9ICdCJykgQU5EICBDQVNUKENBU0UgV0hFTiBAVG90YWxIaXRzID0gMCBUSEVOIDAgRUxTRSBST1VORCgoQWNjdW11bGF0ZWRIaXRzIC8gQFRvdGFsSGl0cykgKiAxMDAsIDIpIEVORCBBUyBERUNJTUFMKDE5LDYpKSA+IDgwIEFORCBDQVNUKENBU0UgV0hFTiBAVG90YWxIaXRzID0gMCBUSEVOIDAgRUxTRSBST1VORCgoQWNjdW11bGF0ZWRIaXRzIC8gQFRvdGFsSGl0cykgKiAxMDAsIDIpIEVORCBBUyBERUNJTUFMKDE5LDYpKSA8PSA5NSBUSEVOIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnQicpIA0KCVdIRU4gRVhJU1RTIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnQycpIEFORCAgQ0FTVChDQVNFIFdIRU4gQFRvdGFsSGl0cyA9IDAgVEhFTiAwIEVMU0UgUk9VTkQoKEFjY3VtdWxhdGVkSGl0cyAvIEBUb3RhbEhpdHMpICogMTAwLCAyKSBFTkQgQVMgREVDSU1BTCgxOSw2KSkgPiA5NSBBTkQgQ0FTVChDQVNFIFdIRU4gQFRvdGFsSGl0cyA9IDAgVEhFTiAwIEVMU0UgUk9VTkQoKEFjY3VtdWxhdGVkSGl0cyAvIEBUb3RhbEhpdHMpICogMTAwLCAyKSBFTkQgQVMgREVDSU1BTCgxOSw2KSkgPD0gOTkgVEhFTiAoU0VMRUNUIFRPUCAxIENhdGVnb3J5NElEIEZST00gSU5fQ2F0ZWdvcnk0IFdIRVJFIERlc2NyaXB0aW9uID0gJ0MnKQ0KCVdIRU4gRVhJU1RTIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnRCcpIEFORCAgQ0FTVChDQVNFIFdIRU4gQFRvdGFsSGl0cyA9IDAgVEhFTiAwIEVMU0UgUk9VTkQoKEFjY3VtdWxhdGVkSGl0cyAvIEBUb3RhbEhpdHMpICogMTAwLCAyKSBFTkQgQVMgREVDSU1BTCgxOSw2KSkgPiA5OSBBTkQgQ0FTVChDQVNFIFdIRU4gQFRvdGFsSGl0cyA9IDAgVEhFTiAwIEVMU0UgUk9VTkQoKEFjY3VtdWxhdGVkSGl0cyAvIEBUb3RhbEhpdHMpICogMTAwLCAyKSBFTkQgQVMgREVDSU1BTCgxOSw2KSkgPD0gMTAwIEFORCBIaXRzID4gMCBUSEVOIChTRUxFQ1QgVE9QIDEgQ2F0ZWdvcnk0SUQgRlJPTSBJTl9DYXRlZ29yeTQgV0hFUkUgRGVzY3JpcHRpb24gPSAnRCcpDQoJV0hFTiBFWElTVFMgKFNFTEVDVCBUT1AgMSBDYXRlZ29yeTRJRCBGUk9NIElOX0NhdGVnb3J5NCBXSEVSRSBEZXNjcmlwdGlvbiA9ICdYJykgVEhFTiAoU0VMRUNUIFRPUCAxIENhdGVnb3J5NElEIEZST00gSU5fQ2F0ZWdvcnk0IFdIRVJFIERlc2NyaXB0aW9uID0gJ1gnKSANCglFTFNFIEkuQ2F0YWdvcnk0SUQNCglFTkQNCgkpDQoJRlJPTSBJTl9NYWluIEkNCglKT0lOICNURU1QX0lOX1NhbGVzUmFua2luZyBTIE9OIEkuSW52ZW50b3J5SUQgPSAgUy5JbnZlbnRvcnlJRA0KDQpTRVQgTk9DT1VOVCBPRkYNCkdPDQoNCnVzcF9KaXdhX0dyYW50X0FwcGxpY2F0aW9uX1Blcm1pc3Npb25zICdKaXdhVXNlcicNCkdP</FileBinary>
+      <ItemNo xmlns="JiwaFinancials.Jiwa.JiwaApplication.Plugin.XML">1</ItemNo>
+    </Document>
+  </Documents>
+</JiwaDocument>
