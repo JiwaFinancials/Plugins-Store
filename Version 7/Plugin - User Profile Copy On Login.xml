@@ -1,0 +1,710 @@
+﻿<?xml version="1.0" encoding="utf-16"?>
+<JiwaDocument xmlns:jiwa="http://www.jiwa.com.au/xml/schemas" Type="JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin">
+  <RecID>fabcb3c2-9ee0-4e3f-bf8c-bd412cbefa29</RecID>
+  <Name>User Profile Copy On Login</Name>
+  <Description>Plugin creates a Staff custom field, type lookup, which can be cleared or point to some other staff member. Upon login, the user settings of the staff member pointed to are read in and used for the staff member being logged in. This allows for the creation of template users which define form layouts, custom columns, etc.</Description>
+  <IsEnabled>true</IsEnabled>
+  <IsIsolatedToOwnAppDomain>false</IsIsolatedToOwnAppDomain>
+  <ExecutionOrder>10</ExecutionOrder>
+  <Author>Jiwa Financials</Author>
+  <Version>7.2.1.1</Version>
+  <Code>using Microsoft.VisualBasic;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Diagnostics;
+using JiwaFinancials.Jiwa;
+using System.Windows.Forms;
+using System.Data.SqlClient;
+using System.Drawing;
+
+#region "FormPlugin"
+public class FormPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaFormPlugin
+{
+	ContextMenuStrip myTemplateProfileContextMenuStrip;
+	
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void SetupBeforeHandlers(JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm JiwaForm, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm JiwaForm, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+		var staffForm = (JiwaFinancials.Jiwa.JiwaStaffUI.frmMain) JiwaForm;
+		myTemplateProfileContextMenuStrip = new ContextMenuStrip();
+		var newToolStripMenuItem = new ToolStripMenuItem("Clear", null, ClearTemplateProfile, "Clear");
+		myTemplateProfileContextMenuStrip.Items.Add(newToolStripMenuItem);	
+		staffForm.grdCustomFields.CellClick += grdCustomFields_CellClick;
+    }
+
+	private void grdCustomFields_CellClick(System.Object sender, FarPoint.Win.Spread.CellClickEventArgs e)
+	{
+		if (e.ColumnHeader == false &amp;&amp; e.Button == MouseButtons.Right) 
+		{
+			var hostGrid = (JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid) sender;	
+			hostGrid.ActiveSheet.SetActiveCell(e.Row,e.Column);
+			if (e.Column == hostGrid.ActiveSheet.Columns["Contents"].Index &amp;&amp; hostGrid.get_GridText("SettingName", e.Row).ToString() == "TemplateProfile")
+				myTemplateProfileContextMenuStrip.Show(hostGrid, e.X, e.Y);					
+		}
+	}	
+		
+	private void ClearTemplateProfile(System.Object sender, System.EventArgs e)
+	{
+		var toolStripItem = (System.Windows.Forms.ToolStripItem) sender;
+		var contextMenuStrip = (System.Windows.Forms.ContextMenuStrip) toolStripItem.Owner;
+		var hostGrid = (JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid) contextMenuStrip.SourceControl;
+		var staffForm = (JiwaFinancials.Jiwa.JiwaStaffUI.frmMain) JiwaFinancials.Jiwa.JiwaApplication.Manager.GetOwnerForm(hostGrid);
+		foreach(JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue customFieldValue in staffForm.Staff.CustomFieldValues) 
+		{
+			if (customFieldValue.CustomField.PluginCustomField.Name == "TemplateProfile")
+			{
+				customFieldValue.Contents = "";
+				customFieldValue.DisplayContents = "";
+				customFieldValue.NotifyPropertyChanged("Contents");
+				break;
+			}
+		}
+	}	
+}
+#endregion
+
+#region "BusinessLogicPlugin"
+public class BusinessLogicPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogicPlugin
+{
+
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic JiwaBusinessLogic, JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+}
+#endregion
+
+#region "ApplicationManagerPlugin"
+public class ApplicationManagerPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaApplicationManagerPlugin
+{
+	private JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin _plugin;
+
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void Setup(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+		_plugin = Plugin;
+		Plugin.Manager.LoggedOn += delegate() { LoggedOn(Plugin.Manager); };
+    }
+	
+	public void LoggedOn(JiwaFinancials.Jiwa.JiwaApplication.Manager Manager)
+	{
+		// read model userid from system settings
+		string modelUserID = Manager.Database.ReadSysData(_plugin.Name, "TemplateProfile", "").ToString();
+		foreach(JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue customFieldValue in Manager.Staff.CustomFieldValues) 
+		{
+			if (customFieldValue.CustomField.PluginCustomField.Name == "TemplateProfile")
+			{
+				modelUserID = customFieldValue.Contents;
+				break;
+			}
+		}		
+		string Sql;
+		
+		if (modelUserID.Trim().Length &gt; 0 &amp;&amp; modelUserID != Manager.Staff.RecID)
+		{
+			Manager.Database.UserSettings.Clear();
+			
+			// Copy from model user
+			
+	        SqlDataReader SQLReader = null;
+	        SqlParameter SQLParam = null;
+
+			var db = Manager.Database;
+			
+	        try {				
+				
+				// Read user profile settings
+	            Sql = @"SELECT Section, IDKey, Contents
+	                			FROM SY_UserProfile
+	                			WHERE UserID = @ModelUserID
+	                			ORDER BY Section, IDKey";
+
+	            using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction))
+				{
+	                SQLParam = new SqlParameter("@ModelUserID", System.Data.SqlDbType.Char);
+	                SQLParam.Value = modelUserID;
+	                SQLCmd.Parameters.Add(SQLParam);
+
+	                SQLReader = db.ExecuteReader(SQLCmd);
+
+	                while (SQLReader.Read() == true) 
+					{
+	                    var newUserSetting = new JiwaFinancials.Jiwa.JiwaODBC.clsUserSetting();
+	                    newUserSetting.Section = db.Sanitise(SQLReader, "Section").ToString();
+	                    newUserSetting.IDKey = db.Sanitise(SQLReader, "IDKey").ToString();
+	                    newUserSetting.Contents = db.Sanitise(SQLReader, "Contents").ToString();
+	                    db.UserSettings.Add(newUserSetting);
+	                }
+
+	                SQLReader.Close();
+	            }
+	        } finally 
+			{
+	            if (SQLReader != null)
+				{
+	                SQLReader.Close();
+				}	
+			}
+			
+			// Delete SY_TabControlSettings (Deletion of SY_TabControlSettings will cascade to SY_TabSettings)
+			Sql = @"DELETE FROM SY_TabControlSettings WHERE HR_Staff_RecID = @CurrentUserID";
+
+            using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction))
+			{
+                SQLParam = new SqlParameter("@CurrentUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = Manager.Staff.RecID;
+                SQLCmd.Parameters.Add(SQLParam);
+
+                db.ExecuteNonQuery(SQLCmd);
+            }
+			
+			// Insert SY_TabControlSettings
+			Sql = @"INSERT INTO SY_TabControlSettings (RecID, HR_Staff_RecID, Context, FullName, UseCustomTabs, TabOrderXML)  
+					SELECT LEFT(REPLACE(NEWID(), '-', ''), 20), @CurrentUserID, Context, FullName, UseCustomTabs, TabOrderXML
+					FROM SY_TabControlSettings					
+					WHERE SY_TabControlSettings.HR_Staff_RecID = @ModelUserID";
+
+            using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction))
+			{
+                SQLParam = new SqlParameter("@CurrentUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = Manager.Staff.RecID;
+                SQLCmd.Parameters.Add(SQLParam);
+
+				SQLParam = new SqlParameter("@ModelUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = modelUserID;
+                SQLCmd.Parameters.Add(SQLParam);
+				
+                db.ExecuteNonQuery(SQLCmd);
+            }
+			
+			// Insert SY_TabSettings
+			Sql = @"INSERT INTO SY_TabSettings(RecID, SY_TabControlSettings_RecID, TabKey, Text, Visible)
+					SELECT LEFT(REPLACE(NEWID(), '-', ''), 20), 
+					(SELECT TOP 1 RecID FROM SY_TabControlSettings WHERE SY_TabControlSettings.HR_Staff_RecID = @CurrentUserID AND SY_TabControlSettings.FullName = Model_SY_TabControlSettings.FullName AND SY_TabControlSettings.Context = Model_SY_TabControlSettings.Context), 
+					Model_SY_TabSettings.TabKey, Model_SY_TabSettings.Text, Model_SY_TabSettings.Visible 
+					FROM SY_TabSettings	Model_SY_TabSettings
+					JOIN SY_TabControlSettings Model_SY_TabControlSettings ON Model_SY_TabControlSettings.RecID = Model_SY_TabSettings.SY_TabControlSettings_RecID
+					WHERE Model_SY_TabControlSettings.HR_Staff_RecID = @ModelUserID";
+
+            using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction))
+			{                
+				SQLParam = new SqlParameter("@ModelUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = modelUserID;
+                SQLCmd.Parameters.Add(SQLParam);
+				
+				SQLParam = new SqlParameter("@CurrentUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = Manager.Staff.RecID;
+                SQLCmd.Parameters.Add(SQLParam);
+				
+                db.ExecuteNonQuery(SQLCmd);
+            }
+			
+			//SY_FormSettings
+			// Delete SY_FormSettings 
+			Sql = @"DELETE FROM SY_FormSettings WHERE HR_Staff_RecID = @CurrentUserID";
+
+            using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction))
+			{
+                SQLParam = new SqlParameter("@CurrentUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = Manager.Staff.RecID;
+                SQLCmd.Parameters.Add(SQLParam);
+
+                db.ExecuteNonQuery(SQLCmd);
+            }
+			
+			// Insert SY_FormSettings
+			Sql = @"INSERT INTO SY_FormSettings (RecID, SY_Forms_ClassName, HR_Staff_RecID, WindowState, [Top], [Left], Width, Height, Context, Floating)  
+					SELECT NEWID(), SY_Forms_ClassName, @CurrentUserID, WindowState, [Top], [Left], Width, Height, Context, Floating 
+					FROM SY_FormSettings					
+					WHERE SY_FormSettings.HR_Staff_RecID = @ModelUserID";
+
+            using (SqlCommand SQLCmd = new SqlCommand(Sql, db.SQLConnection, db.SQLTransaction))
+			{
+                SQLParam = new SqlParameter("@CurrentUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = Manager.Staff.RecID;
+                SQLCmd.Parameters.Add(SQLParam);
+
+				SQLParam = new SqlParameter("@ModelUserID", System.Data.SqlDbType.Char);
+                SQLParam.Value = modelUserID;
+                SQLCmd.Parameters.Add(SQLParam);
+				
+                db.ExecuteNonQuery(SQLCmd);
+            }			
+		}
+	}
+}
+#endregion
+
+#region "CustomFieldPlugin"
+public class CustomFieldPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldPlugin
+{
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void FormatCell(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldValues HostObject, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ReadData(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldValues HostObject, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {		
+		if (CustomField.PluginCustomField.Name == "TemplateProfile") 
+		{
+			if (CustomFieldValue.Contents.Trim().Length &gt; 0) {
+				var staff = CustomField.Manager.EntityFactory.CreateEntity&lt;JiwaFinancials.Jiwa.JiwaApplication.Entities.Staff.Staff&gt;();
+				try
+				{
+				staff.ReadRecord(CustomFieldValue.Contents);
+				CustomFieldValue.DisplayContents = String.Format("{0}", staff.DisplayName);						
+				}
+				catch(JiwaFinancials.Jiwa.JiwaApplication.Exceptions.RecordNotFoundException ex)
+				{
+					CustomFieldValue.DisplayContents = "";
+				}
+			}
+		}		
+    }
+
+    public void ButtonClicked(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaCustomFieldValues HostObject, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+		if (CustomField.PluginCustomField.Name == "TemplateProfile") 
+		{
+			var staff = CustomField.Manager.EntityFactory.CreateEntity&lt;JiwaFinancials.Jiwa.JiwaApplication.Entities.Staff.Staff&gt;();
+			staff.Search(FormObject.Form);
+			if(staff != null &amp;&amp; staff.RecID != null &amp;&amp; staff.RecID.Trim().Length &gt;0)
+			{
+				CustomFieldValue.Contents = staff.RecID;
+				CustomFieldValue.DisplayContents = String.Format("{0}", staff.DisplayName);						
+			}
+		}		
+    }
+}
+#endregion
+
+#region "LineCustomFieldPlugin"
+public class LineCustomFieldPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldPlugin
+{
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void FormatCell(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldValues HostItem, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ReadData(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldValues HostItem, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+
+    public void ButtonClicked(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.IJiwaLineCustomFieldValues HostItem, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomField CustomField, JiwaFinancials.Jiwa.JiwaApplication.CustomFields.CustomFieldValue CustomFieldValue)
+    {
+    }
+}
+#endregion
+
+#region "SystemSettingPlugin"
+public class SystemSettingPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaSystemSettingPlugin
+{
+    public override object InitializeLifetimeService()
+    {
+        // returning null here will prevent the lease manager
+        // from deleting the Object.
+        return null;
+    }
+
+    public void FormatCell(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.SystemSettings.Setting SystemSetting)
+    {
+    }
+
+    public void ReadData(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Row, JiwaFinancials.Jiwa.JiwaApplication.SystemSettings.Setting SystemSetting)
+    {
+    }
+
+    public void ButtonClicked(JiwaFinancials.Jiwa.JiwaApplication.IJiwaBusinessLogic BusinessLogicHost, JiwaFinancials.Jiwa.JiwaApplication.Controls.JiwaGrid GridObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaForm FormObject, int Col, int Row, JiwaFinancials.Jiwa.JiwaApplication.SystemSettings.Setting SystemSetting)
+    {
+    }
+}
+#endregion
+
+#region "ScheduledExecutionPlugin"
+public class ScheduledExecutionPlugin : System.MarshalByRefObject, JiwaFinancials.Jiwa.JiwaApplication.IJiwaScheduledExecutionPlugin
+{
+    public void Execute(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin, JiwaFinancials.Jiwa.JiwaApplication.Schedule.Schedule Schedule)
+    {
+    }
+
+
+    public void OnServiceStart(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+
+
+    public void OnServiceStopping(JiwaFinancials.Jiwa.JiwaApplication.Plugin.Plugin Plugin)
+    {
+    }
+}
+#endregion</Code>
+  <ExceptionPolicy>Abort</ExceptionPolicy>
+  <Language>CSharp</Language>
+  <PluginFormCollection>
+    <PluginForm>
+      <RecID>a557fa5a-39c5-4a6a-a0b2-a2e17262205e</RecID>
+      <Description>Staff Maintenance</Description>
+      <ClassName>JiwaFinancials.Jiwa.JiwaStaffUI.frmMain</ClassName>
+    </PluginForm>
+  </PluginFormCollection>
+  <ReferenceCollection>
+    <Reference>
+      <RecID>f3adb471-fa48-46f2-b6ce-99427924cf9f</RecID>
+      <AssemblyFullName>JiwaApplication, Version=7.2.1.25, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaApplication.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaApplication.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>7ee132e3-dae1-4935-b7a7-854d8b7f567e</RecID>
+      <AssemblyFullName>mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>mscorlib.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.NET\Framework\v4.0.30319\mscorlib.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>8c50ee39-40b7-47f3-80a2-a3096db43657</RecID>
+      <AssemblyFullName>System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System\v4.0_4.0.0.0__b77a5c561934e089\System.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>f976dfb4-b17e-46d5-8680-a67456620cb4</RecID>
+      <AssemblyFullName>Microsoft.VisualBasic, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>Microsoft.VisualBasic.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\Microsoft.VisualBasic\v4.0_10.0.0.0__b03f5f7f11d50a3a\Microsoft.VisualBasic.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>fefba21c-5827-4393-8f73-9ca7e499bb14</RecID>
+      <AssemblyFullName>System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>System.Drawing.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Drawing\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Drawing.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>cbbfe062-5f8e-4570-b584-c782b1bc4cad</RecID>
+      <AssemblyFullName>System.Data, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Data.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_32\System.Data\v4.0_4.0.0.0__b77a5c561934e089\System.Data.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b72655c0-514c-4a87-b7e7-182ac5e4c296</RecID>
+      <AssemblyFullName>JiwaODBC, Version=7.2.1.25, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaODBC.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaODBC.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>6c4218bc-ba89-44b0-85aa-de549a0b52ed</RecID>
+      <AssemblyFullName>System.Xml, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Xml.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Xml\v4.0_4.0.0.0__b77a5c561934e089\System.Xml.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>400df90f-451e-4e8e-b3a6-61c40e14b2cb</RecID>
+      <AssemblyFullName>System.Runtime.Serialization, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Runtime.Serialization.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Runtime.Serialization\v4.0_4.0.0.0__b77a5c561934e089\System.Runtime.Serialization.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>ab92d761-b511-4d83-a418-792a9872ab6a</RecID>
+      <AssemblyFullName>Microsoft.SqlServer.Smo, Version=15.100.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91</AssemblyFullName>
+      <AssemblyName>Microsoft.SqlServer.Smo.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Microsoft.SqlServer.Smo.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>1312a4b9-d042-4c2a-bf69-102c712dd1bb</RecID>
+      <AssemblyFullName>Microsoft.SqlServer.ConnectionInfo, Version=15.100.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91</AssemblyFullName>
+      <AssemblyName>Microsoft.SqlServer.ConnectionInfo.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Microsoft.SqlServer.ConnectionInfo.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>1fa319a0-e5e6-45d9-806a-e22a0c653595</RecID>
+      <AssemblyFullName>System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Windows.Forms.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Windows.Forms\v4.0_4.0.0.0__b77a5c561934e089\System.Windows.Forms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>8eb4d7f1-677f-4bd3-bfc7-41bb43d3b3bd</RecID>
+      <AssemblyFullName>Infragistics4.Win.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>cb99bf5e-ead4-471e-a489-3492436b3280</RecID>
+      <AssemblyFullName>Infragistics4.Win.Misc.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.Misc.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.Misc.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>d8cc5013-9977-41a8-8fd3-c7ab54afbf06</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinEditors.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinEditors.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinEditors.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>5a4d365d-3f05-4ab9-b21c-b4201b9a489f</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinExplorerBar.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinExplorerBar.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinExplorerBar.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>8b998633-b9bd-42bf-860f-555750064cc4</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinTree.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinTree.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinTree.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>a6385f97-d14f-4712-8b28-edbb84a2bebe</RecID>
+      <AssemblyFullName>FarPoint.Win.Spread, Version=8.35.20151.0, Culture=neutral, PublicKeyToken=327c3516b1b18457</AssemblyFullName>
+      <AssemblyName>FarPoint.Win.Spread.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\FarPoint.Win.Spread.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>5ffdc0e2-0354-4d19-8e0b-48e0aabedc7a</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinTabControl.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinTabControl.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinTabControl.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>0f2fd1d7-ef69-4e2c-bf62-02a9350100e2</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinToolbars.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinToolbars.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinToolbars.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>3ad313db-b9f3-44cf-b780-a23515bda3d1</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinStatusBar.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinStatusBar.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinStatusBar.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>69c63ac9-fd3e-4739-8c3e-07a0b3da4234</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinSchedule.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinSchedule.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinSchedule.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>5c4ff0fd-2475-455b-98f9-127624e8c4ec</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinListView.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinListView.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinListView.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>c121f5cf-ae50-40d6-8f09-4f393b9f121c</RecID>
+      <AssemblyFullName>ServiceStack, Version=5.0.0.0, Culture=neutral, PublicKeyToken=02c12cbda47e6587</AssemblyFullName>
+      <AssemblyName>ServiceStack.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\ServiceStack.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>fecdb487-8021-480c-adb8-584e620fa5f1</RecID>
+      <AssemblyFullName>ActiproSoftware.SyntaxEditor.WinForms, Version=16.1.330.0, Culture=neutral, PublicKeyToken=c27e062d3c1a4763</AssemblyFullName>
+      <AssemblyName>ActiproSoftware.SyntaxEditor.WinForms.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\ActiproSoftware.SyntaxEditor.WinForms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>a32110e5-53c9-4f52-a91a-14afcaf90850</RecID>
+      <AssemblyFullName>ZetaHtmlEditControl, Version=1.1.0.4, Culture=neutral, PublicKeyToken=2e2e5ba5da72b6c0</AssemblyFullName>
+      <AssemblyName>ZetaHtmlEditControl.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\ZetaHtmlEditControl.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>9df3d227-54b6-48ed-a1d8-8da11f39af72</RecID>
+      <AssemblyFullName>ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms, Version=16.1.330.0, Culture=neutral, PublicKeyToken=c27e062d3c1a4763</AssemblyFullName>
+      <AssemblyName>ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\ActiproSoftware.SyntaxEditor.Addons.DotNet.WinForms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>d625436c-7262-471c-8fa5-51332751dc28</RecID>
+      <AssemblyFullName>JiwaEncryption, Version=7.2.1.25, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaEncryption.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaEncryption.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>84406611-aeb4-495e-b239-ead2237ea5f0</RecID>
+      <AssemblyFullName>System.Security, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</AssemblyFullName>
+      <AssemblyName>System.Security.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Security\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Security.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>792b2473-4da6-4a05-aa87-fd626fb6a938</RecID>
+      <AssemblyFullName>Microsoft.SqlServer.Dac, Version=170.0.0.0, Culture=neutral, PublicKeyToken=89845dcd8080cc91</AssemblyFullName>
+      <AssemblyName>Microsoft.SqlServer.Dac.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Microsoft.SqlServer.Dac.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>6e02d7f3-9739-477c-92c0-3192e4a04f12</RecID>
+      <AssemblyFullName>CrystalDecisions.CrystalReports.Engine, Version=13.0.4000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.CrystalReports.Engine.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\CrystalDecisions.CrystalReports.Engine\v4.0_13.0.4000.0__692fbea5521e1304\CrystalDecisions.CrystalReports.Engine.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>91c9f8a3-8721-4aca-963d-c1706528a977</RecID>
+      <AssemblyFullName>CrystalDecisions.Shared, Version=13.0.4000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.Shared.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\CrystalDecisions.Shared\v4.0_13.0.4000.0__692fbea5521e1304\CrystalDecisions.Shared.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>174afa0d-8e06-4ce1-9252-58fb29c5bf7f</RecID>
+      <AssemblyFullName>CrystalDecisions.ReportAppServer.ClientDoc, Version=13.0.4000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.ReportAppServer.ClientDoc.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\CrystalDecisions.ReportAppServer.ClientDoc\v4.0_13.0.4000.0__692fbea5521e1304\CrystalDecisions.ReportAppServer.ClientDoc.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>70fd1a1b-0a34-4084-9e82-8aac915ed496</RecID>
+      <AssemblyFullName>CrystalDecisions.ReportAppServer.Controllers, Version=13.0.4000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.ReportAppServer.Controllers.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\CrystalDecisions.ReportAppServer.Controllers\v4.0_13.0.4000.0__692fbea5521e1304\CrystalDecisions.ReportAppServer.Controllers.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b33fd63d-2879-41c2-ba4e-68e114caeb1b</RecID>
+      <AssemblyFullName>System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</AssemblyFullName>
+      <AssemblyName>System.Core.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\System.Core\v4.0_4.0.0.0__b77a5c561934e089\System.Core.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>e050c065-1ebf-4d2c-81d7-cff52f3f0c2b</RecID>
+      <AssemblyFullName>Infragistics4.Win.AppStylistSupport.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.AppStylistSupport.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.AppStylistSupport.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>3be5eda4-b763-4889-a271-af67c27a64cc</RecID>
+      <AssemblyFullName>JiwaLib, Version=7.2.1.25, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaLib.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaLib.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>32d513bd-2682-4d90-be68-32b25ec61674</RecID>
+      <AssemblyFullName>Microsoft.ApplicationInsights, Version=2.4.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35</AssemblyFullName>
+      <AssemblyName>Microsoft.ApplicationInsights.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Microsoft.ApplicationInsights.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>5a10ff4c-6576-4bc3-be55-14c7e9f2bd2e</RecID>
+      <AssemblyFullName>CrystalDecisions.Windows.Forms, Version=13.0.4000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.Windows.Forms.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\CrystalDecisions.Windows.Forms\v4.0_13.0.4000.0__692fbea5521e1304\CrystalDecisions.Windows.Forms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>bc998452-8ee0-4a79-9656-8188802cb298</RecID>
+      <AssemblyFullName>Infragistics4.Win.UltraWinGrid.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Win.UltraWinGrid.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Win.UltraWinGrid.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>55f1f7d4-bfcd-40f6-8369-c84027aca7e2</RecID>
+      <AssemblyFullName>Infragistics4.Shared.v13.1, Version=13.1.20131.2060, Culture=neutral, PublicKeyToken=7dd5c3163f2cd0cb</AssemblyFullName>
+      <AssemblyName>Infragistics4.Shared.v13.1.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\Infragistics4.Shared.v13.1.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>3446e9bf-08f4-4886-8ede-77d5c904bc80</RecID>
+      <AssemblyFullName>Microsoft.Office.Interop.Outlook, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c</AssemblyFullName>
+      <AssemblyName>Microsoft.Office.Interop.Outlook.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\assembly\GAC_MSIL\Microsoft.Office.Interop.Outlook\15.0.0.0__71e9bce111e9429c\Microsoft.Office.Interop.Outlook.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>46d5fbb4-e20e-4f2b-bb37-d4724b4bbcac</RecID>
+      <AssemblyFullName>ActiproSoftware.Shared.WinForms, Version=16.1.330.0, Culture=neutral, PublicKeyToken=c27e062d3c1a4763</AssemblyFullName>
+      <AssemblyName>ActiproSoftware.Shared.WinForms.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\ActiproSoftware.Shared.WinForms.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>45be9f18-ad26-4eef-b1a2-4210a975e1c2</RecID>
+      <AssemblyFullName>FarPoint.Win, Version=8.35.20151.0, Culture=neutral, PublicKeyToken=327c3516b1b18457</AssemblyFullName>
+      <AssemblyName>FarPoint.Win.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\FarPoint.Win.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b8d28ce6-c719-4562-842b-1a15c5e03cb2</RecID>
+      <AssemblyFullName>CrystalDecisions.ReportAppServer.ReportDefModel, Version=13.0.4000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304</AssemblyFullName>
+      <AssemblyName>CrystalDecisions.ReportAppServer.ReportDefModel.dll</AssemblyName>
+      <AssemblyLocation>C:\Windows\Microsoft.Net\assembly\GAC_MSIL\CrystalDecisions.ReportAppServer.ReportDefModel\v4.0_13.0.4000.0__692fbea5521e1304\CrystalDecisions.ReportAppServer.ReportDefModel.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>5d8f501a-f50e-447c-aa2c-e4aa8ce8281f</RecID>
+      <AssemblyFullName>JiwaJobCostingUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaJobCostingUI.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaJobCostingUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>d8a42234-0fc9-4889-a6df-e11dafdcb045</RecID>
+      <AssemblyFullName>JiwaJobCosting, Version=7.2.1.25, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaJobCosting.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaJobCosting.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>b9c6dcce-44c0-4f39-9121-857999091da4</RecID>
+      <AssemblyFullName>JiwaSerialNumbersUI, Version=7.0.175.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaSerialNumbersUI.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaSerialNumbersUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>008c94c3-99c1-4e00-a103-a0dc5bdba819</RecID>
+      <AssemblyFullName>JiwaSalesUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaSalesUI.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaSalesUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>35ab068c-9cdc-4299-a2ec-6c50f89c18ba</RecID>
+      <AssemblyFullName>JiwaPurchaseOrdersUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaPurchaseOrdersUI.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaPurchaseOrdersUI.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>880ace21-7098-404b-94c7-47a8c52fdfaa</RecID>
+      <AssemblyFullName>JiwaPurchaseOrders, Version=7.2.1.25, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaPurchaseOrders.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaPurchaseOrders.dll</AssemblyLocation>
+    </Reference>
+    <Reference>
+      <RecID>71a462f2-76fd-4014-b78b-1c127eb71593</RecID>
+      <AssemblyFullName>JiwaStaffUI, Version=7.2.1.0, Culture=neutral, PublicKeyToken=e30ce81e37f29c8c</AssemblyFullName>
+      <AssemblyName>JiwaStaffUI.dll</AssemblyName>
+      <AssemblyLocation>C:\Program Files (x86)\Jiwa Financials\Jiwa 7\JiwaStaffUI.dll</AssemblyLocation>
+    </Reference>
+  </ReferenceCollection>
+  <CustomFieldCollection>
+    <CustomField>
+      <RecID>9f505f52-ae5f-4d92-b81f-36591951725d</RecID>
+      <Name>TemplateProfile</Name>
+      <Description>The profile (form layouts, custom columns, etc.) information is copied from this staff member upon login.</Description>
+      <DisplayOrder>1</DisplayOrder>
+      <CellType>Lookup</CellType>
+      <CustomFieldModule>Staff Maintenance</CustomFieldModule>
+    </CustomField>
+  </CustomFieldCollection>
+</JiwaDocument>
